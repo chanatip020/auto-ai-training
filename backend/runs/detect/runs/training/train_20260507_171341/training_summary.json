@@ -1,0 +1,13 @@
+{
+  "run_name": "train_20260507_171341",
+  "dataset_path": "D:\\CCTV\\Dataset\\smt_reflow\\dataset\\yolo-20251217-smt-reflow-v1-test",
+  "model": "yolo11s.pt",
+  "epochs": 10,
+  "imgsz": 640,
+  "batch": 8,
+  "device": "cpu",
+  "result_path": "D:\\AIAutoTraining\\ai-model-studio\\backend\\runs\\detect\\runs\\training\\train_20260507_171341",
+  "best_model_path": "D:\\AIAutoTraining\\ai-model-studio\\backend\\runs\\detect\\runs\\training\\train_20260507_171341\\weights\\best.pt",
+  "last_model_path": "D:\\AIAutoTraining\\ai-model-studio\\backend\\runs\\detect\\runs\\training\\train_20260507_171341\\weights\\last.pt",
+  "created_at": "2026-05-07T20:23:21"
+}

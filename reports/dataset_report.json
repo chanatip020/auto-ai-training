@@ -1,26 +1,25 @@
 {
-  "dataset_path": "D:\\CCTV\\Dataset\\smt_reflow\\dataset\\yolo-20251217-smt-reflow-v1",
+  "dataset_path": "D:\\CCTV\\Dataset\\smt_reflow\\dataset\\yolo-20251217-smt-reflow-v1-test",
   "summary": {
-    "total_images": 1957,
-    "total_labels": 1957,
-    "total_bbox": 1251,
+    "total_images": 291,
+    "total_labels": 291,
+    "total_bbox": 247,
     "total_classes": 2,
     "health_score": 100
   },
   "class_distribution": {
     "0": {
       "class_name": "hand",
-      "bbox_count": 405
+      "bbox_count": 73
     },
     "1": {
       "class_name": "item",
-      "bbox_count": 846
+      "bbox_count": 174
     }
   },
   "split_label_count": {
-    "test": 195,
-    "train": 1566,
-    "val": 196
+    "train": 196,
+    "val": 95
   },
   "issues": {
     "missing_labels": [],

@@ -12,6 +12,8 @@ def train_yolo_model(
     imgsz: int = 640,
     batch: str = "auto",
     device: str = "0",
+    job_id=None,
+    training_jobs=None,
 ):
     dataset_dir = dataset_dir.resolve()
     data_yaml = dataset_dir / "data.yaml"
@@ -23,6 +25,30 @@ def train_yolo_model(
     project_dir = Path("runs") / "training"
 
     yolo_model = YOLO(model)
+
+    def update_progress(trainer):
+
+        if not training_jobs or not job_id:
+            return
+
+        current_epoch = int(trainer.epoch) + 1
+        total_epochs = int(epochs)
+
+        progress = int((current_epoch / total_epochs) * 100)
+
+        training_jobs[job_id]["status"] = "training"
+        training_jobs[job_id]["progress"] = min(progress, 99)
+        training_jobs[job_id]["current_epoch"] = current_epoch
+        training_jobs[job_id]["total_epochs"] = total_epochs
+
+        # STOP REQUEST
+        if training_jobs[job_id].get("stop_requested"):
+
+            training_jobs[job_id]["status"] = "stopped"
+
+            trainer.stop = True
+
+    yolo_model.add_callback("on_train_epoch_end", update_progress)
 
     train_result = yolo_model.train(
         data=str(data_yaml),
@@ -42,6 +68,11 @@ def train_yolo_model(
     result_path = Path(train_result.save_dir)
     best_model_path = result_path / "weights" / "best.pt"
     last_model_path = result_path / "weights" / "last.pt"
+
+    if training_jobs and job_id:
+        training_jobs[job_id]["progress"] = 100
+        training_jobs[job_id]["current_epoch"] = epochs
+        training_jobs[job_id]["total_epochs"] = epochs
 
     summary = {
         "run_name": run_name,
