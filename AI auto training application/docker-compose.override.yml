@@ -1,0 +1,37 @@
+# Dev overrides — automatically merged into docker-compose.yml when you run
+# `docker compose up` without `-f`.
+#
+# - `api`: mount source for hot reload, run uvicorn with --reload
+# - `web`: switch to Vite dev server (npm run dev) with HMR
+
+services:
+  api:
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: DEBUG
+    volumes:
+      - ./backend:/app
+      - ./data:/data
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  web:
+    # In dev we want hot module reload. We use the **full** node:20 image
+    # (not slim, not alpine) because some Docker Desktop / WSL2 setups have
+    # had trouble locating npm in the slim variants — full image guarantees
+    # `npm`, `node`, and `npx` are on /usr/local/bin/. Production builds in
+    # frontend/Dockerfile keep using bookworm-slim for size.
+    image: node:20
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules         # keep container-installed deps
+    # Use absolute path to npm as a belt-and-braces measure against PATH
+    # quirks in some WSL2 + Docker Desktop combinations.
+    command: >
+      sh -c "/usr/local/bin/npm install --no-audit --no-fund &&
+             /usr/local/bin/npm run dev -- --host 0.0.0.0 --port 80"
+    environment:
+      VITE_API_BASE: ""              # bundle calls /api on same origin
+      API_PROXY_TARGET: http://api:8000   # Vite dev proxy target inside docker net

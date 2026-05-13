@@ -1,0 +1,20 @@
+# Local dev
+.env
+.env.local
+backend/.env
+data/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Frontend (placeholder for later)
+node_modules/
+dist/
+.vite/

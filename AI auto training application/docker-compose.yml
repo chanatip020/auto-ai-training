@@ -1,0 +1,50 @@
+# Production / "one command up" compose for the AI Auto Training Platform.
+#
+# `docker compose up --build`                                — dev (uses override below)
+# `docker compose -f docker-compose.yml up --build`           — production-style
+#
+# Both services run on the same docker bridge network; the frontend nginx
+# proxies /api → api:8000 internally, so users only need to expose ONE port.
+
+services:
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: aiat/backend:latest
+    container_name: aiat-api
+    env_file:
+      - ./backend/.env
+    environment:
+      APP_ENV: ${APP_ENV:-prod}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      STORAGE_BACKEND: local
+      STORAGE_ROOT: /data
+    volumes:
+      - ./data:/data
+    expose:
+      - "8000"
+    ports:
+      # Expose 8000 on the host too so curl / scripts can hit it directly.
+      - "8000:8000"
+    restart: unless-stopped
+    # Healthcheck comes from the Dockerfile (uses Python stdlib, not curl).
+    # We override only the timing here to match the Dockerfile defaults.
+    healthcheck:
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: aiat/frontend:latest
+    container_name: aiat-web
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "5173:80"   # browse http://localhost:5173
+    restart: unless-stopped

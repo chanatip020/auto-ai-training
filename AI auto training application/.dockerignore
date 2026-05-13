@@ -1,0 +1,10 @@
+backend/.venv/
+backend/__pycache__/
+backend/data/
+backend/logs/
+frontend/node_modules/
+frontend/dist/
+.git
+.idea/
+.vscode/
+*.log
