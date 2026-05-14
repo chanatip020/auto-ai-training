@@ -36,7 +36,7 @@ export interface DatasetVersion {
   id: string;
   dataset_id: string;
   version: number;
-  format: string;          // 'raw' | 'yolo-det' | 'yolo-seg' | 'yolo-cls'
+  format: string;
   storage_uri: string;
   num_images: number | null;
   num_labels: number | null;
@@ -101,6 +101,9 @@ export interface TrainingRecommendation {
   params: Record<string, unknown>;
   reasons: Record<string, string>;
   assumptions: Record<string, unknown>;
+  // Optional logical grouping the UI uses to split basic vs augmentation params.
+  // Backwards compatible: missing groups => render everything in one block.
+  groups?: { basic?: string[]; augmentation?: string[]; [k: string]: string[] | undefined };
 }
 
 export interface TrainingJob {
@@ -141,9 +144,7 @@ export interface TrainingArtifact {
   created_at: string;
 }
 
-/* ---------- CVAT (Phase 6 — types defined now so the rest of the
-              codebase can already reference them) ---------- */
-
+/* ---------- CVAT (Phase 6) ---------- */
 export interface CvatConnection {
   id: string;
   name: string;

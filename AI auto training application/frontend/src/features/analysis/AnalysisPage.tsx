@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '../../components/Button';
@@ -31,6 +31,17 @@ export function AnalysisPage() {
 
   const a = analysis.data;
   const hasReport = !!a;
+
+  // Split params into basic vs augmentation using the optional `groups` field.
+  const grouped = useMemo(() => {
+    const params = trainingRec.data?.params ?? {};
+    const groups = trainingRec.data?.groups;
+    const basic = (groups?.basic ?? []).filter((k) => k in params);
+    const aug = (groups?.augmentation ?? []).filter((k) => k in params);
+    const claimed = new Set([...basic, ...aug]);
+    const other = Object.keys(params).filter((k) => !claimed.has(k));
+    return { basic, aug, other, params };
+  }, [trainingRec.data]);
 
   return (
     <div>
@@ -124,23 +135,40 @@ export function AnalysisPage() {
           </div>
 
           <Card className="mt-4">
-            <CardHeader title="Suggested training parameters" subtitle="From the recommendation engine." />
-            <CardBody>
+            <CardHeader
+              title="Suggested training parameters"
+              subtitle="From the recommendation engine. You can edit any of these on the next page."
+            />
+            <CardBody className="space-y-4">
               {trainingRec.isLoading && <Spinner />}
               {trainingRec.data && (
-                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  {Object.entries(trainingRec.data.params).map(([k, v]) => (
-                    <div key={k} className="rounded-md border border-slate-200 px-3 py-2">
-                      <div className="text-xs uppercase tracking-wider text-slate-500">{k}</div>
-                      <div className="mt-1 font-mono text-sm text-slate-900">{String(v)}</div>
-                      {trainingRec.data.reasons[k] && (
-                        <div className="mt-1 text-[11px] text-slate-500">{trainingRec.data.reasons[k]}</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <>
+                  <ParamGrid
+                    title="Basic"
+                    keys={grouped.basic.length ? grouped.basic : Object.keys(grouped.params)}
+                    params={grouped.params}
+                    reasons={trainingRec.data.reasons}
+                  />
+                  {grouped.aug.length > 0 && (
+                    <ParamGrid
+                      title="Augmentation"
+                      subtitle="Tuned for your dataset size, task, and class balance."
+                      keys={grouped.aug}
+                      params={grouped.params}
+                      reasons={trainingRec.data.reasons}
+                    />
+                  )}
+                  {grouped.other.length > 0 && (
+                    <ParamGrid
+                      title="Other"
+                      keys={grouped.other}
+                      params={grouped.params}
+                      reasons={trainingRec.data.reasons}
+                    />
+                  )}
+                </>
               )}
-              <div className="mt-4 flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3">
                 {a.ready_for_training ? (
                   <span className="text-xs text-emerald-700">Health checks pass — ready to train.</span>
                 ) : (
@@ -160,5 +188,38 @@ export function AnalysisPage() {
         </>
       )}
     </div>
+  );
+}
+
+
+function ParamGrid({
+  title, subtitle, keys, params, reasons,
+}: {
+  title: string;
+  subtitle?: string;
+  keys: string[];
+  params: Record<string, unknown>;
+  reasons: Record<string, string>;
+}) {
+  return (
+    <section>
+      <header className="mb-2">
+        <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-600">{title}</h4>
+        {subtitle && <p className="text-[11px] text-slate-500">{subtitle}</p>}
+      </header>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {keys.map((k) => (
+          <div key={k} className="rounded-md border border-slate-200 px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-mono text-[11px] text-slate-500">{k}</span>
+              <span className="font-mono text-sm text-slate-900">{String(params[k])}</span>
+            </div>
+            {reasons[k] && (
+              <div className="mt-1 text-[11px] text-slate-500">{reasons[k]}</div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
