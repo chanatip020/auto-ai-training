@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '../../components/Button';
 import { Card, CardBody, CardHeader } from '../../components/Card';
@@ -10,16 +11,23 @@ import { useAnalysis, useStartAnalysis, useTrainingRecommendation } from './api'
 
 export function AnalysisPage() {
   const { id: projectId = '', versionId = '' } = useParams();
+  const qc = useQueryClient();
   const start = useStartAnalysis(versionId);
   const [jobId, setJobId] = useState<string | null>(null);
   const job = useJob(jobId);
   const analysis = useAnalysis(versionId);
   const trainingRec = useTrainingRecommendation(versionId);
 
-  // After a successful analyze job, refetch the analysis row.
-  if (jobId && job.data?.status === 'succeeded' && analysis.dataUpdatedAt < (job.data.finished_at ? +new Date(job.data.finished_at) : 0)) {
-    analysis.refetch();
-  }
+  // Auto-refresh: when the analyze job finishes, invalidate analysis +
+  // training-rec + project so the UI updates without a manual reload.
+  useEffect(() => {
+    if (job.data?.status === 'succeeded') {
+      qc.invalidateQueries({ queryKey: ['analysis', versionId] });
+      qc.invalidateQueries({ queryKey: ['training-rec', versionId] });
+      qc.invalidateQueries({ queryKey: ['project', projectId] });
+      qc.invalidateQueries({ queryKey: ['project-timeline', projectId] });
+    }
+  }, [job.data?.status, versionId, projectId, qc]);
 
   const a = analysis.data;
   const hasReport = !!a;
@@ -43,7 +51,7 @@ export function AnalysisPage() {
         <Card className="mb-4">
           <CardBody>
             <div className="flex items-center gap-3 text-sm">
-              <Spinner /> <span>{job.data.message ?? 'Working…'} ({job.data.progress}%)</span>
+              <Spinner /> <span>{job.data.message ?? 'Working...'} ({job.data.progress}%)</span>
             </div>
           </CardBody>
         </Card>
@@ -132,10 +140,18 @@ export function AnalysisPage() {
                   ))}
                 </div>
               )}
-              <div className="mt-4 flex justify-end">
+              <div className="mt-4 flex items-center justify-between gap-3">
+                {a.ready_for_training ? (
+                  <span className="text-xs text-emerald-700">Health checks pass — ready to train.</span>
+                ) : (
+                  <span className="text-xs text-amber-700">
+                    Health checks flagged blockers — you can still configure training; you'll be
+                    asked to confirm the override before starting.
+                  </span>
+                )}
                 <Link to={`/projects/${projectId}/train?version=${versionId}`}>
-                  <Button disabled={!a.ready_for_training} title={a.ready_for_training ? '' : 'Resolve blockers first'}>
-                    Configure training →
+                  <Button variant={a.ready_for_training ? 'primary' : 'secondary'}>
+                    Configure training -&gt;
                   </Button>
                 </Link>
               </div>

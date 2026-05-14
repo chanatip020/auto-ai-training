@@ -29,9 +29,13 @@ export function useCreateDataset(projectId: string) {
   });
 }
 
-export function useUploadZip(datasetId: string) {
+// `datasetId` is read at mutate time (not hook-setup time) so that flows
+// which create the dataset right before the upload don't end up with a
+// stale empty-string closure.
+export function useUploadZip() {
   return useMutation({
-    mutationFn: (file: File) => {
+    mutationFn: ({ datasetId, file }: { datasetId: string; file: File }) => {
+      if (!datasetId) throw new Error('datasetId is required');
       const fd = new FormData();
       fd.append('file', file);
       return api.upload<{ job_id: string }>(`/api/v1/datasets/${datasetId}/upload-zip`, fd);
@@ -45,10 +49,12 @@ interface ConvertBody {
   classes_override?: string[] | null;
 }
 
-export function useConvert(datasetId: string) {
+export function useConvert() {
   return useMutation({
-    mutationFn: (body: ConvertBody) =>
-      api.post<{ job_id: string }>(`/api/v1/datasets/${datasetId}/convert`, body),
+    mutationFn: ({ datasetId, body }: { datasetId: string; body: ConvertBody }) => {
+      if (!datasetId) throw new Error('datasetId is required');
+      return api.post<{ job_id: string }>(`/api/v1/datasets/${datasetId}/convert`, body);
+    },
   });
 }
 

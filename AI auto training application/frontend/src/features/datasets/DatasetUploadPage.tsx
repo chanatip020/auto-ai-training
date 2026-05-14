@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { Button } from '../../components/Button';
 import { Card, CardBody, CardHeader } from '../../components/Card';
+import { Field, Input } from '../../components/Input';
 import { FullSpinner, Spinner } from '../../components/Spinner';
 import { PageHeader } from '../../components/PageHeader';
 import { StatusPill } from '../../components/StatusPill';
@@ -29,7 +31,6 @@ export function DatasetUploadPage() {
   const create = useCreateDataset(id);
   const [pickedDatasetId, setPickedDatasetId] = useState<string | null>(null);
 
-  // Default the picked dataset to the latest one once datasets load.
   useEffect(() => {
     if (!pickedDatasetId && datasets.data?.items?.[0]) {
       setPickedDatasetId(datasets.data.items[0].id);
@@ -149,11 +150,22 @@ function ZipUpload({
   createPending: boolean;
   createMutate: () => Promise<string>;
 }) {
+  const qc = useQueryClient();
   const [file, setFile] = useState<File | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [createdDsId, setCreatedDsId] = useState<string | null>(null);
-  const upload = useUploadZip(createdDsId ?? '');
+  const upload = useUploadZip();
   const job = useJob(jobId);
+
+  // Auto-refresh the dataset detail and dataset list when the ingest job finishes.
+  useEffect(() => {
+    if (job.data?.status === 'succeeded' && createdDsId) {
+      qc.invalidateQueries({ queryKey: ['dataset', createdDsId] });
+      qc.invalidateQueries({ queryKey: ['datasets', projectId] });
+      qc.invalidateQueries({ queryKey: ['project', projectId] });
+      qc.invalidateQueries({ queryKey: ['project-timeline', projectId] });
+    }
+  }, [job.data?.status, createdDsId, projectId, qc]);
 
   async function start() {
     if (!file) return;
@@ -163,8 +175,7 @@ function ZipUpload({
       setCreatedDsId(dsId);
       onCreated(dsId);
     }
-    // Refresh upload mutation now that datasetId is known
-    const r = await upload.mutateAsync(file);
+    const r = await upload.mutateAsync({ datasetId: dsId, file });
     setJobId(r.job_id);
   }
 
@@ -213,15 +224,13 @@ function ZipUpload({
         <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <Spinner size={12} />
+              {job.data.status === 'running' || job.data.status === 'pending' ? <Spinner size={12} /> : null}
               <StatusPill status={job.data.status} />
               <span className="text-slate-700">{job.data.message ?? 'working…'}</span>
             </div>
             <span className="font-mono text-slate-500">{job.data.progress}%</span>
           </div>
-          {job.data.error && (
-            <p className="mt-2 text-red-700">{job.data.error}</p>
-          )}
+          {job.data.error && <p className="mt-2 text-red-700">{job.data.error}</p>}
         </div>
       )}
     </div>
@@ -241,7 +250,8 @@ function ConvertSection({
               num_classes: number | null; classes: string[] | null;
               summary: Record<string, unknown> }[];
 }) {
-  const convert = useConvert(datasetId);
+  const qc = useQueryClient();
+  const convert = useConvert();
   const [jobId, setJobId] = useState<string | null>(null);
   const job = useJob(jobId);
   const targetFormat = useMemo(
@@ -250,8 +260,27 @@ function ConvertSection({
     [taskType],
   );
 
+  // Split ratios — editable, default 70/20/10
+  const [train, setTrain] = useState(0.7);
+  const [val, setVal] = useState(0.2);
+  const [test, setTest] = useState(0.1);
+  const sum = +(train + val + test).toFixed(3);
+  const splitValid = Math.abs(sum - 1) < 0.005 && train >= 0 && val >= 0 && test >= 0;
+
+  // Auto-refresh dataset detail when convert job succeeds
+  useEffect(() => {
+    if (job.data?.status === 'succeeded') {
+      qc.invalidateQueries({ queryKey: ['dataset', datasetId] });
+      qc.invalidateQueries({ queryKey: ['project', projectId] });
+      qc.invalidateQueries({ queryKey: ['project-timeline', projectId] });
+    }
+  }, [job.data?.status, datasetId, projectId, qc]);
+
   async function start() {
-    const r = await convert.mutateAsync({ format: targetFormat });
+    const r = await convert.mutateAsync({
+      datasetId,
+      body: { format: targetFormat, ratios: { train, val, test } },
+    });
     setJobId(r.job_id);
   }
 
@@ -286,14 +315,54 @@ function ConvertSection({
       </ol>
 
       {latestRaw && (
-        <div className="flex items-center justify-between rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-          <div className="text-xs text-slate-600">
-            Convert <span className="font-mono">v{latestRaw.version}</span> (raw) to <span className="font-mono">{targetFormat}</span>{' '}
-            with default 70/20/10 split.
+        <div className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-3">
+          <div className="text-xs font-medium text-slate-700">
+            Convert <span className="font-mono">v{latestRaw.version}</span> (raw) →{' '}
+            <span className="font-mono">{targetFormat}</span>
           </div>
-          <Button onClick={start} loading={convert.isPending || job.data?.status === 'running'}>
-            Convert
-          </Button>
+
+          <div className="grid grid-cols-3 gap-2">
+            <Field label="Train">
+              <Input
+                type="number" min={0} max={1} step={0.01}
+                value={train}
+                onChange={(e) => setTrain(parseFloat(e.target.value || '0'))}
+              />
+            </Field>
+            <Field label="Val">
+              <Input
+                type="number" min={0} max={1} step={0.01}
+                value={val}
+                onChange={(e) => setVal(parseFloat(e.target.value || '0'))}
+              />
+            </Field>
+            <Field label="Test">
+              <Input
+                type="number" min={0} max={1} step={0.01}
+                value={test}
+                onChange={(e) => setTest(parseFloat(e.target.value || '0'))}
+              />
+            </Field>
+          </div>
+          <div className={'text-[11px] ' + (splitValid ? 'text-slate-500' : 'text-red-600')}>
+            Sum: {sum.toFixed(3)}{splitValid ? ' ✓' : ' — must equal 1.000'}
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => { setTrain(0.7); setVal(0.2); setTest(0.1); }}
+            >
+              Reset 70/20/10
+            </Button>
+            <Button
+              onClick={start}
+              disabled={!splitValid || convert.isPending}
+              loading={convert.isPending || job.data?.status === 'running'}
+            >
+              Convert
+            </Button>
+          </div>
         </div>
       )}
 
@@ -301,11 +370,13 @@ function ConvertSection({
         <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
+              {(job.data.status === 'running' || job.data.status === 'pending') && <Spinner size={12} />}
               <StatusPill status={job.data.status} />
               <span className="text-slate-700">{job.data.message ?? '…'}</span>
             </div>
             <span className="font-mono text-slate-500">{job.data.progress}%</span>
           </div>
+          {job.data.error && <p className="mt-2 text-red-700">{job.data.error}</p>}
         </div>
       )}
 
