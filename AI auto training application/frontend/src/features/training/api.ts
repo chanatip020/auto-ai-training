@@ -13,6 +13,10 @@ interface TrainingArtifactsOut { items: TrainingArtifact[] }
 interface StartBody {
   dataset_version_id: string;
   params: Record<string, unknown>;
+  // Phase 8 — provenance fields. All optional; backend supplies sensible defaults.
+  preset_source?: 'recommended' | 'default' | 'manual';
+  override_blockers?: boolean;
+  recommendation_snapshot?: Record<string, unknown> | null;
 }
 
 export function useStartTraining(projectId: string) {
@@ -73,4 +77,54 @@ export function artifactDownloadUrl(jobId: string, artifactId: string): string {
 
 export function sseTrainingPath(jobId: string): string {
   return `/api/v1/sse/training/${jobId}`;
+}
+
+// ---- Phase 8 history ----
+
+export interface TrainingHistoryItem {
+  id: string;
+  dataset_version_id: string;
+  status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  best_metric: number | null;
+  total_epochs: number | null;
+  current_epoch: number | null;
+  params: Record<string, unknown>;
+  summary: Record<string, unknown>;
+  preset_source: string | null;
+  override_blockers: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+}
+interface HistoryOut { items: TrainingHistoryItem[]; total: number }
+
+export function useTrainingHistory(
+  projectId: string | undefined,
+  opts: { limit?: number; offset?: number; status?: string } = {},
+) {
+  const qs = new URLSearchParams();
+  if (opts.limit) qs.set('limit', String(opts.limit));
+  if (opts.offset) qs.set('offset', String(opts.offset));
+  if (opts.status) qs.set('status_filter', opts.status);
+  const url = `/api/v1/projects/${projectId}/training-history${qs.toString() ? '?' + qs : ''}`;
+  return useQuery({
+    queryKey: ['training-history', projectId, opts],
+    queryFn: () => api.get<HistoryOut>(url),
+    enabled: !!projectId,
+  });
+}
+
+export interface CloneConfig {
+  dataset_version_id: string;
+  params: Record<string, unknown>;
+  preset_source: string | null;
+  override_blockers: boolean;
+}
+
+export function useCloneAsConfig(jobId: string | undefined) {
+  return useQuery({
+    queryKey: ['clone-config', jobId],
+    queryFn: () => api.get<CloneConfig>(`/api/v1/training-jobs/${jobId}/clone-as-config`),
+    enabled: !!jobId,
+  });
 }

@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { Button } from '../../components/Button';
 import { Card, CardBody, CardHeader } from '../../components/Card';
 import { Collapsible } from '../../components/Collapsible';
-import { Field, Input, Select } from '../../components/Input';
 import { FullSpinner } from '../../components/Spinner';
 import { PageHeader } from '../../components/PageHeader';
 import { ApiError } from '../../lib/api';
@@ -13,21 +12,24 @@ import { useProject } from '../projects/api';
 import { useStartTraining } from './api';
 
 
-/** Default training params keyed by Ultralytics arg names.
- * https://docs.ultralytics.com/modes/train/#train-settings
- */
-type ParamMap = Record<string, number | string | boolean>;
+type ParamVal = number | string | boolean;
+type ParamMap = Record<string, ParamVal>;
 
-const DEFAULTS: ParamMap = {
+/**
+ * Canonical Ultralytics YOLO defaults.
+ * Source: https://docs.ultralytics.com/modes/train/#train-settings
+ * Used as the "YOLO defaults" preset and as the baseline for the diff highlight.
+ */
+const YOLO_DEFAULTS: ParamMap = {
   // basic
   model: 'yolov8n',
-  epochs: 50,
+  epochs: 100,
   imgsz: 640,
   batch: 16,
   device: 'cpu',
 
   // optimization
-  optimizer: 'auto',         // SGD | Adam | AdamW | NAdam | RAdam | RMSProp | auto
+  optimizer: 'auto',
   lr0: 0.01,
   lrf: 0.01,
   momentum: 0.937,
@@ -36,7 +38,7 @@ const DEFAULTS: ParamMap = {
   warmup_momentum: 0.8,
   warmup_bias_lr: 0.1,
   cos_lr: false,
-  patience: 100,             // early-stop patience
+  patience: 100,
   close_mosaic: 10,
   amp: true,
   dropout: 0.0,
@@ -60,11 +62,21 @@ const DEFAULTS: ParamMap = {
   // misc
   workers: 8,
   seed: 0,
-  save_period: -1,           // -1 = only save best/last
+  save_period: -1,
   single_cls: false,
   rect: false,
   resume: false,
 };
+
+
+function equalParam(a: ParamVal | undefined, b: ParamVal | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  // numeric tolerance for floats produced by the rec engine
+  if (typeof a === 'number' && typeof b === 'number') {
+    return Math.abs(a - b) < 1e-6;
+  }
+  return a === b;
+}
 
 
 export function TrainingStartPage() {
@@ -75,7 +87,6 @@ export function TrainingStartPage() {
 
   const project = useProject(projectId);
   const datasets = useDatasets(projectId);
-
   const firstDataset = datasets.data?.items?.[0];
   const detail = useDatasetDetail(firstDataset?.id);
 
@@ -91,24 +102,33 @@ export function TrainingStartPage() {
   const rec = useTrainingRecommendation(versionId || undefined);
   const analysis = useAnalysis(versionId || undefined);
 
-  // -------- editable params --------
-  const [params, setParams] = useState<ParamMap>({ ...DEFAULTS });
+  // --- params + preset selector ----
+  const [params, setParams] = useState<ParamMap>({ ...YOLO_DEFAULTS });
+  const [preset, setPreset] = useState<'recommended' | 'default'>('recommended');
 
-  // When the recommendation comes back, patch in just the keys it suggests
-  // so the user gets a smart starting point but their manual edits aren't lost.
-  useEffect(() => {
-    if (!rec.data) return;
-    setParams((prev) => {
-      const next = { ...prev };
-      for (const [k, v] of Object.entries(rec.data!.params || {})) {
-        if (v !== undefined && v !== null) next[k] = v as number | string | boolean;
+  // Compute the "recommended" map = defaults + rec.params (rec values win).
+  const recommendedMap: ParamMap | null = useMemo(() => {
+    if (!rec.data) return null;
+    const m: ParamMap = { ...YOLO_DEFAULTS };
+    for (const [k, v] of Object.entries(rec.data.params)) {
+      if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') {
+        m[k] = v;
       }
-      return next;
-    });
+    }
+    return m;
   }, [rec.data]);
 
-  // -------- override readiness --------
-  const ready = analysis.data?.ready_for_training ?? null;   // null = unknown / not analyzed yet
+  // Apply preset whenever it changes or when the recommendation arrives.
+  useEffect(() => {
+    if (preset === 'default') {
+      setParams({ ...YOLO_DEFAULTS });
+    } else if (preset === 'recommended' && recommendedMap) {
+      setParams({ ...recommendedMap });
+    }
+  }, [preset, recommendedMap]);
+
+  // --- readiness override ---
+  const ready = analysis.data?.ready_for_training ?? null;
   const blockers = (analysis.data?.recommendations || []).filter((r) => r.severity === 'blocker');
   const [override, setOverride] = useState(false);
 
@@ -117,32 +137,54 @@ export function TrainingStartPage() {
   async function onStart() {
     if (!versionId) return;
     if (ready === false && !override) return;
+    // Compute the effective preset source so the backend can record provenance:
+    //   - 'recommended' if the params match the recommendation map exactly
+    //   - 'default'     if they match YOLO_DEFAULTS exactly
+    //   - 'manual'      if the user edited anything
+    const matchesRec = recommendedMap && deepEqualParams(params, recommendedMap);
+    const matchesDefault = deepEqualParams(params, YOLO_DEFAULTS);
+    const effectivePresetSource: 'recommended' | 'default' | 'manual' =
+      matchesRec ? 'recommended' : matchesDefault ? 'default' : 'manual';
     try {
       const tj = await start.mutateAsync({
         dataset_version_id: versionId,
         params,
+        preset_source: effectivePresetSource,
+        override_blockers: override,
+        recommendation_snapshot: rec.data
+          ? { params: rec.data.params, reasons: rec.data.reasons,
+              assumptions: rec.data.assumptions } as Record<string, unknown>
+          : null,
       });
       navigate(`/projects/${projectId}/train/${tj.id}`);
-    } catch {
-      /* shown via start.error */
+    } catch { /* shown via start.error */ }
+  }
+
+  function deepEqualParams(x: ParamMap, y: ParamMap): boolean {
+    const keys = new Set([...Object.keys(x), ...Object.keys(y)]);
+    for (const k of keys) {
+      if (!equalParam(x[k], y[k])) return false;
     }
+    return true;
   }
 
   const err = start.error instanceof ApiError ? start.error.message : null;
-  const cannotStart =
-    !versionId || start.isPending || (ready === false && !override);
+  const cannotStart = !versionId || start.isPending || (ready === false && !override);
 
-  function setNum(k: string) {
-    return (e: React.ChangeEvent<HTMLInputElement>) =>
-      setParams((p) => ({ ...p, [k]: e.target.value === '' ? '' : Number(e.target.value) }));
+  // Helper: was this key tuned by the recommendation?  (i.e. its recommended
+  // value differs from the canonical YOLO default)
+  function isTunedByRec(k: string): boolean {
+    if (!recommendedMap) return false;
+    return !equalParam(recommendedMap[k], YOLO_DEFAULTS[k]);
   }
-  function setStr(k: string) {
-    return (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) =>
-      setParams((p) => ({ ...p, [k]: e.target.value }));
+  // Is the CURRENT value different from the YOLO baseline?  Drives the
+  // blue highlight in the UI.
+  function differs(k: string): boolean {
+    return !equalParam(params[k], YOLO_DEFAULTS[k]);
   }
-  function setBool(k: string) {
-    return (e: React.ChangeEvent<HTMLInputElement>) =>
-      setParams((p) => ({ ...p, [k]: e.target.checked }));
+
+  function set(k: string, v: ParamVal) {
+    setParams((p) => ({ ...p, [k]: v }));
   }
 
   return (
@@ -157,30 +199,75 @@ export function TrainingStartPage() {
       ) : convertedVersions.length === 0 ? (
         <Card>
           <CardBody className="text-center text-sm text-slate-600">
-            No converted dataset versions yet. <Link to={`/projects/${projectId}/dataset`} className="text-blue-600 underline">Upload + convert one</Link> first.
+            No converted dataset versions yet.{' '}
+            <Link to={`/projects/${projectId}/dataset`} className="text-blue-600 underline">
+              Upload + convert one
+            </Link>{' '}
+            first.
           </CardBody>
         </Card>
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-          {/* ---------- form ---------- */}
           <div className="space-y-4 lg:col-span-2">
             <Card>
-              <CardHeader title="Hyperparameters" subtitle="Defaults filled from the recommendation engine. Edit anything." />
+              <CardHeader title="Hyperparameters" subtitle="Pick a preset, then edit anything." />
               <CardBody className="space-y-4">
-                <Field label="Dataset version">
-                  <Select value={versionId} onChange={(e) => setVersionId(e.target.value)}>
+
+                {/* ---- preset selector ---- */}
+                <div className="space-y-2">
+                  <div className="text-xs font-medium text-slate-700">Parameter source</div>
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setPreset('recommended')}
+                      disabled={!recommendedMap}
+                      className={
+                        'rounded-md px-3 py-1 ' +
+                        (preset === 'recommended'
+                          ? 'bg-white shadow-sm font-medium text-slate-900'
+                          : 'text-slate-500 hover:text-slate-700') +
+                        (recommendedMap ? '' : ' opacity-50 cursor-not-allowed')
+                      }
+                    >
+                      Recommended {recommendedMap ? '' : '(run analysis first)'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreset('default')}
+                      className={
+                        'rounded-md px-3 py-1 ' +
+                        (preset === 'default'
+                          ? 'bg-white shadow-sm font-medium text-slate-900'
+                          : 'text-slate-500 hover:text-slate-700')
+                      }
+                    >
+                      YOLO defaults
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    <span className="mr-1 inline-block h-2 w-2 rounded-sm bg-blue-500 align-middle" />
+                    Blue-ringed inputs differ from the Ultralytics defaults.
+                  </p>
+                </div>
+
+                <Param label="Dataset version">
+                  <select
+                    value={versionId}
+                    onChange={(e) => setVersionId(e.target.value)}
+                    className={baseInput}
+                  >
                     {convertedVersions.map((v) => (
                       <option key={v.id} value={v.id}>
                         v{v.version} · {v.format} · {v.num_images ?? '?'} images
                       </option>
                     ))}
-                  </Select>
-                </Field>
+                  </select>
+                </Param>
 
-                {/* ----- Basic ----- */}
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Model">
-                    <Select value={String(params.model)} onChange={setStr('model')}>
+                {/* ---- Basic ---- */}
+                <SectionGrid>
+                  <Param label="Model" tuned={isTunedByRec('model')} highlight={differs('model')}>
+                    <select value={String(params.model)} onChange={(e) => set('model', e.target.value)} className={baseInput}>
                       <option value="yolov8n">yolov8n (nano)</option>
                       <option value="yolov8s">yolov8s (small)</option>
                       <option value="yolov8m">yolov8m (medium)</option>
@@ -193,30 +280,20 @@ export function TrainingStartPage() {
                       <option value="yolo11n">yolo11n</option>
                       <option value="yolo11s">yolo11s</option>
                       <option value="yolo11m">yolo11m</option>
-                    </Select>
-                  </Field>
-                  <Field label="Epochs">
-                    <Input type="number" min={1} max={1000}
-                           value={String(params.epochs)} onChange={setNum('epochs')} />
-                  </Field>
-                  <Field label="Image size (imgsz)">
-                    <Input type="number" min={32} max={4096} step={32}
-                           value={String(params.imgsz)} onChange={setNum('imgsz')} />
-                  </Field>
-                  <Field label="Batch">
-                    <Input type="number" min={-1} max={256}
-                           value={String(params.batch)} onChange={setNum('batch')} />
-                  </Field>
-                  <Field label="Device" hint="cpu, 0 (single GPU), 0,1 (multi-GPU)">
-                    <Input value={String(params.device)} onChange={setStr('device')} />
-                  </Field>
-                </div>
+                    </select>
+                  </Param>
+                  <NumParam k="epochs"  params={params} set={set} highlight={differs('epochs')}  tuned={isTunedByRec('epochs')}  min={1} max={1000} />
+                  <NumParam k="imgsz"   params={params} set={set} highlight={differs('imgsz')}   tuned={isTunedByRec('imgsz')}   min={32} max={4096} step={32} />
+                  <NumParam k="batch"   params={params} set={set} highlight={differs('batch')}   tuned={isTunedByRec('batch')}   min={-1} max={256} />
+                  <Param label="Device" tuned={isTunedByRec('device')} highlight={differs('device')} hint="cpu, 0, 0,1">
+                    <input value={String(params.device)} onChange={(e) => set('device', e.target.value)} className={baseInput} />
+                  </Param>
+                </SectionGrid>
 
-                {/* ----- Optimization ----- */}
-                <Collapsible title="Optimizer & schedule" subtitle="Learning rate, optimizer, warmup, regularization">
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Optimizer">
-                      <Select value={String(params.optimizer)} onChange={setStr('optimizer')}>
+                <Collapsible title="Optimizer & schedule" defaultOpen>
+                  <SectionGrid>
+                    <Param label="optimizer" tuned={isTunedByRec('optimizer')} highlight={differs('optimizer')}>
+                      <select value={String(params.optimizer)} onChange={(e) => set('optimizer', e.target.value)} className={baseInput}>
                         <option value="auto">auto</option>
                         <option value="SGD">SGD</option>
                         <option value="Adam">Adam</option>
@@ -224,110 +301,54 @@ export function TrainingStartPage() {
                         <option value="NAdam">NAdam</option>
                         <option value="RAdam">RAdam</option>
                         <option value="RMSProp">RMSProp</option>
-                      </Select>
-                    </Field>
-                    <Field label="lr0 (initial LR)">
-                      <Input type="number" step={0.0001} value={String(params.lr0)} onChange={setNum('lr0')} />
-                    </Field>
-                    <Field label="lrf (final LR factor)">
-                      <Input type="number" step={0.0001} value={String(params.lrf)} onChange={setNum('lrf')} />
-                    </Field>
-                    <Field label="Momentum">
-                      <Input type="number" step={0.001} value={String(params.momentum)} onChange={setNum('momentum')} />
-                    </Field>
-                    <Field label="Weight decay">
-                      <Input type="number" step={0.0001} value={String(params.weight_decay)} onChange={setNum('weight_decay')} />
-                    </Field>
-                    <Field label="Warmup epochs">
-                      <Input type="number" step={0.5} value={String(params.warmup_epochs)} onChange={setNum('warmup_epochs')} />
-                    </Field>
-                    <Field label="Warmup momentum">
-                      <Input type="number" step={0.01} value={String(params.warmup_momentum)} onChange={setNum('warmup_momentum')} />
-                    </Field>
-                    <Field label="Warmup bias LR">
-                      <Input type="number" step={0.01} value={String(params.warmup_bias_lr)} onChange={setNum('warmup_bias_lr')} />
-                    </Field>
-                    <Field label="Patience (early stop)">
-                      <Input type="number" min={0} value={String(params.patience)} onChange={setNum('patience')} />
-                    </Field>
-                    <Field label="Close mosaic (epochs)">
-                      <Input type="number" min={0} value={String(params.close_mosaic)} onChange={setNum('close_mosaic')} />
-                    </Field>
-                    <Field label="Dropout">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.dropout)} onChange={setNum('dropout')} />
-                    </Field>
-                    <Field label="Label smoothing">
-                      <Input type="number" step={0.01} min={0} max={1} value={String(params.label_smoothing)} onChange={setNum('label_smoothing')} />
-                    </Field>
-                    <Bool label="Cosine LR schedule" checked={!!params.cos_lr} onChange={setBool('cos_lr')} />
-                    <Bool label="Mixed precision (AMP)" checked={!!params.amp} onChange={setBool('amp')} />
-                  </div>
+                      </select>
+                    </Param>
+                    <NumParam k="lr0"             params={params} set={set} highlight={differs('lr0')}             tuned={isTunedByRec('lr0')}             step={0.0001} />
+                    <NumParam k="lrf"             params={params} set={set} highlight={differs('lrf')}             tuned={isTunedByRec('lrf')}             step={0.0001} />
+                    <NumParam k="momentum"        params={params} set={set} highlight={differs('momentum')}        tuned={isTunedByRec('momentum')}        step={0.001} />
+                    <NumParam k="weight_decay"    params={params} set={set} highlight={differs('weight_decay')}    tuned={isTunedByRec('weight_decay')}    step={0.0001} />
+                    <NumParam k="warmup_epochs"   params={params} set={set} highlight={differs('warmup_epochs')}   tuned={isTunedByRec('warmup_epochs')}   step={0.5} />
+                    <NumParam k="warmup_momentum" params={params} set={set} highlight={differs('warmup_momentum')} tuned={isTunedByRec('warmup_momentum')} step={0.01} />
+                    <NumParam k="warmup_bias_lr"  params={params} set={set} highlight={differs('warmup_bias_lr')}  tuned={isTunedByRec('warmup_bias_lr')}  step={0.01} />
+                    <NumParam k="patience"        params={params} set={set} highlight={differs('patience')}        tuned={isTunedByRec('patience')}        min={0} />
+                    <NumParam k="close_mosaic"    params={params} set={set} highlight={differs('close_mosaic')}    tuned={isTunedByRec('close_mosaic')}    min={0} />
+                    <NumParam k="dropout"         params={params} set={set} highlight={differs('dropout')}         tuned={isTunedByRec('dropout')}         step={0.05} min={0} max={1} />
+                    <NumParam k="label_smoothing" params={params} set={set} highlight={differs('label_smoothing')} tuned={isTunedByRec('label_smoothing')} step={0.01} min={0} max={1} />
+                    <BoolParam k="cos_lr"         params={params} set={set} highlight={differs('cos_lr')}          tuned={isTunedByRec('cos_lr')} label="Cosine LR schedule" />
+                    <BoolParam k="amp"            params={params} set={set} highlight={differs('amp')}             tuned={isTunedByRec('amp')}    label="Mixed precision (AMP)" />
+                  </SectionGrid>
                 </Collapsible>
 
-                {/* ----- Augmentation ----- */}
-                <Collapsible title="Augmentation" subtitle="HSV jitter, geometric transforms, mosaic, mixup">
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="HSV-H">
-                      <Input type="number" step={0.005} min={0} max={1} value={String(params.hsv_h)} onChange={setNum('hsv_h')} />
-                    </Field>
-                    <Field label="HSV-S">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.hsv_s)} onChange={setNum('hsv_s')} />
-                    </Field>
-                    <Field label="HSV-V">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.hsv_v)} onChange={setNum('hsv_v')} />
-                    </Field>
-                    <Field label="Degrees (rotation)">
-                      <Input type="number" step={1} value={String(params.degrees)} onChange={setNum('degrees')} />
-                    </Field>
-                    <Field label="Translate">
-                      <Input type="number" step={0.01} min={0} max={1} value={String(params.translate)} onChange={setNum('translate')} />
-                    </Field>
-                    <Field label="Scale">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.scale)} onChange={setNum('scale')} />
-                    </Field>
-                    <Field label="Shear">
-                      <Input type="number" step={1} value={String(params.shear)} onChange={setNum('shear')} />
-                    </Field>
-                    <Field label="Perspective">
-                      <Input type="number" step={0.0001} min={0} max={0.001} value={String(params.perspective)} onChange={setNum('perspective')} />
-                    </Field>
-                    <Field label="Flip up-down">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.flipud)} onChange={setNum('flipud')} />
-                    </Field>
-                    <Field label="Flip left-right">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.fliplr)} onChange={setNum('fliplr')} />
-                    </Field>
-                    <Field label="Mosaic">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.mosaic)} onChange={setNum('mosaic')} />
-                    </Field>
-                    <Field label="Mixup">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.mixup)} onChange={setNum('mixup')} />
-                    </Field>
-                    <Field label="Copy-paste">
-                      <Input type="number" step={0.05} min={0} max={1} value={String(params.copy_paste)} onChange={setNum('copy_paste')} />
-                    </Field>
-                  </div>
+                <Collapsible title="Augmentation" defaultOpen>
+                  <SectionGrid>
+                    <NumParam k="hsv_h"      params={params} set={set} highlight={differs('hsv_h')}      tuned={isTunedByRec('hsv_h')}      step={0.005} min={0} max={1} />
+                    <NumParam k="hsv_s"      params={params} set={set} highlight={differs('hsv_s')}      tuned={isTunedByRec('hsv_s')}      step={0.05}  min={0} max={1} />
+                    <NumParam k="hsv_v"      params={params} set={set} highlight={differs('hsv_v')}      tuned={isTunedByRec('hsv_v')}      step={0.05}  min={0} max={1} />
+                    <NumParam k="degrees"    params={params} set={set} highlight={differs('degrees')}    tuned={isTunedByRec('degrees')}    step={1} />
+                    <NumParam k="translate"  params={params} set={set} highlight={differs('translate')}  tuned={isTunedByRec('translate')}  step={0.01} min={0} max={1} />
+                    <NumParam k="scale"      params={params} set={set} highlight={differs('scale')}      tuned={isTunedByRec('scale')}      step={0.05} min={0} max={1} />
+                    <NumParam k="shear"      params={params} set={set} highlight={differs('shear')}      tuned={isTunedByRec('shear')}      step={1} />
+                    <NumParam k="perspective" params={params} set={set} highlight={differs('perspective')} tuned={isTunedByRec('perspective')} step={0.0001} min={0} max={0.001} />
+                    <NumParam k="flipud"     params={params} set={set} highlight={differs('flipud')}     tuned={isTunedByRec('flipud')}     step={0.05} min={0} max={1} />
+                    <NumParam k="fliplr"     params={params} set={set} highlight={differs('fliplr')}     tuned={isTunedByRec('fliplr')}     step={0.05} min={0} max={1} />
+                    <NumParam k="mosaic"     params={params} set={set} highlight={differs('mosaic')}     tuned={isTunedByRec('mosaic')}     step={0.05} min={0} max={1} />
+                    <NumParam k="mixup"      params={params} set={set} highlight={differs('mixup')}      tuned={isTunedByRec('mixup')}      step={0.05} min={0} max={1} />
+                    <NumParam k="copy_paste" params={params} set={set} highlight={differs('copy_paste')} tuned={isTunedByRec('copy_paste')} step={0.05} min={0} max={1} />
+                  </SectionGrid>
                 </Collapsible>
 
-                {/* ----- Misc ----- */}
-                <Collapsible title="Advanced" subtitle="Workers, seed, periodic checkpoints, single-class, rectangular training">
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Workers">
-                      <Input type="number" min={0} value={String(params.workers)} onChange={setNum('workers')} />
-                    </Field>
-                    <Field label="Seed">
-                      <Input type="number" value={String(params.seed)} onChange={setNum('seed')} />
-                    </Field>
-                    <Field label="Save period (epochs, -1=off)">
-                      <Input type="number" value={String(params.save_period)} onChange={setNum('save_period')} />
-                    </Field>
-                    <Bool label="Single class (treat all as one)" checked={!!params.single_cls} onChange={setBool('single_cls')} />
-                    <Bool label="Rectangular training" checked={!!params.rect} onChange={setBool('rect')} />
-                    <Bool label="Resume from last checkpoint" checked={!!params.resume} onChange={setBool('resume')} />
-                  </div>
+                <Collapsible title="Advanced">
+                  <SectionGrid>
+                    <NumParam k="workers"     params={params} set={set} highlight={differs('workers')}     tuned={isTunedByRec('workers')}     min={0} />
+                    <NumParam k="seed"        params={params} set={set} highlight={differs('seed')}        tuned={isTunedByRec('seed')} />
+                    <NumParam k="save_period" params={params} set={set} highlight={differs('save_period')} tuned={isTunedByRec('save_period')} />
+                    <BoolParam k="single_cls" params={params} set={set} highlight={differs('single_cls')} tuned={isTunedByRec('single_cls')} label="Single class" />
+                    <BoolParam k="rect"       params={params} set={set} highlight={differs('rect')}       tuned={isTunedByRec('rect')}       label="Rectangular training" />
+                    <BoolParam k="resume"     params={params} set={set} highlight={differs('resume')}     tuned={isTunedByRec('resume')}     label="Resume last checkpoint" />
+                  </SectionGrid>
                 </Collapsible>
 
-                {/* ----- readiness override ----- */}
+                {/* ---- readiness override ---- */}
                 {ready === false && (
                   <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-900">
                     <div className="font-medium">Dataset isn't ready for training.</div>
@@ -342,13 +363,9 @@ export function TrainingStartPage() {
                         checked={override}
                         onChange={(e) => {
                           if (e.target.checked) {
-                            const ok = confirm(
-                              'Training on a dataset that failed health checks may produce a poor model. Continue anyway?',
-                            );
+                            const ok = confirm('Training on a dataset that failed health checks may produce a poor model. Continue anyway?');
                             setOverride(ok);
-                          } else {
-                            setOverride(false);
-                          }
+                          } else setOverride(false);
                         }}
                       />
                       <span>I understand the risk and want to train anyway.</span>
@@ -359,7 +376,7 @@ export function TrainingStartPage() {
                 {err && <p className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{err}</p>}
 
                 <div className="flex justify-between gap-2">
-                  <Button variant="secondary" onClick={() => setParams({ ...DEFAULTS })}>
+                  <Button variant="secondary" onClick={() => setPreset('default')}>
                     Reset to defaults
                   </Button>
                   <Button onClick={onStart} loading={start.isPending} disabled={cannotStart}>
@@ -370,7 +387,7 @@ export function TrainingStartPage() {
             </Card>
           </div>
 
-          {/* ---------- side panel ---------- */}
+          {/* side panel */}
           <div className="space-y-4">
             <Card>
               <CardHeader title="Why these defaults?" />
@@ -403,15 +420,98 @@ export function TrainingStartPage() {
   );
 }
 
-function Bool({ label, checked, onChange }: {
+
+// ----- small reusable bits -----
+const baseInput =
+  'block w-full rounded-md border bg-white px-3 py-1.5 text-sm shadow-sm ' +
+  'placeholder:text-slate-400 focus:outline-none focus:ring-1 ' +
+  'disabled:bg-slate-50 disabled:text-slate-500 ' +
+  'border-slate-300 focus:border-blue-500 focus:ring-blue-500';
+const baseInputHL =
+  'block w-full rounded-md border bg-blue-50 px-3 py-1.5 text-sm shadow-sm ' +
+  'placeholder:text-slate-400 focus:outline-none focus:ring-1 ' +
+  'border-blue-400 ring-1 ring-blue-200 focus:border-blue-600 focus:ring-blue-500';
+
+
+function SectionGrid({ children }: { children: React.ReactNode }) {
+  return <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{children}</div>;
+}
+
+function Param({
+  label, hint, tuned, highlight, children,
+}: {
   label: string;
-  checked: boolean;
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  hint?: string;
+  tuned?: boolean;
+  highlight?: boolean;
+  children: React.ReactNode;
 }) {
   return (
-    <label className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-3 py-2">
-      <input type="checkbox" checked={checked} onChange={onChange} />
-      <span className="text-xs text-slate-700">{label}</span>
+    <label className="block">
+      <span className="mb-1 flex items-center justify-between gap-2 text-xs font-medium text-slate-700">
+        <span className={highlight ? 'text-blue-700' : ''}>{label}</span>
+        {tuned && (
+          <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-blue-700">
+            tuned
+          </span>
+        )}
+      </span>
+      {children}
+      {hint && <span className="mt-1 block text-[11px] text-slate-500">{hint}</span>}
     </label>
+  );
+}
+
+function NumParam({
+  k, params, set, highlight, tuned, ...rest
+}: {
+  k: string;
+  params: ParamMap;
+  set: (k: string, v: ParamVal) => void;
+  highlight?: boolean;
+  tuned?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+}) {
+  return (
+    <Param label={k} tuned={tuned} highlight={highlight}>
+      <input
+        type="number"
+        value={String(params[k] ?? '')}
+        onChange={(e) => set(k, e.target.value === '' ? '' as unknown as number : Number(e.target.value))}
+        className={highlight ? baseInputHL : baseInput}
+        {...rest}
+      />
+    </Param>
+  );
+}
+
+function BoolParam({
+  k, params, set, highlight, tuned, label,
+}: {
+  k: string;
+  params: ParamMap;
+  set: (k: string, v: ParamVal) => void;
+  highlight?: boolean;
+  tuned?: boolean;
+  label: string;
+}) {
+  return (
+    <Param label={label} tuned={tuned} highlight={highlight}>
+      <div className={
+        'flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm ' +
+        (highlight
+          ? 'border-blue-400 bg-blue-50 ring-1 ring-blue-200'
+          : 'border-slate-300 bg-white')
+      }>
+        <input
+          type="checkbox"
+          checked={!!params[k]}
+          onChange={(e) => set(k, e.target.checked)}
+        />
+        <span className="font-mono text-[11px] text-slate-600">{k}</span>
+      </div>
+    </Param>
   );
 }

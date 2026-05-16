@@ -71,6 +71,12 @@ export function ProjectDetailPage() {
               to={`/projects/${id}/train`}
               done={['training', 'completed'].includes(p.status)}
             />
+            <NextStep
+              label="Training history"
+              hint="All past runs side-by-side. Compare params, clone configs, sort by best mAP."
+              to={`/projects/${id}/history`}
+              done={false}
+            />
           </CardBody>
         </Card>
 

@@ -5,7 +5,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, Enum as SAEnum, ForeignKey, Integer, Numeric, Text, text
+from sqlalchemy import (
+    BigInteger, Boolean, DateTime, Enum as SAEnum, ForeignKey, Integer, Numeric, Text, text,
+)
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,6 +26,13 @@ _artifact_kind_t = SAEnum(
 
 
 class TrainingJob(Base):
+    """A single training run.
+
+    Stores enough provenance to (a) reproduce the run, (b) compare it to other
+    runs in the same project, and (c) let future AI agents reason over the
+    sequence of runs without having to re-derive context from logs.
+    """
+
     __tablename__ = "training_jobs"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -43,9 +52,36 @@ class TrainingJob(Base):
     current_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_epochs: Mapped[int | None] = mapped_column(Integer, nullable=True)
     best_metric: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+
+    # The full hyperparameter dict the user submitted.
     params: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+
+    # ---- provenance (added in migration 0005) ----
+    # Summary written at training end:
+    #   best_epoch, total_time_s, hardware (Python/torch/CUDA/GPU/RAM),
+    #   exit_reason ('done' | 'stopped' | 'failed'), n_epochs_completed,
+    #   diff_vs_recommendation (which keys the user changed)
+    summary: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    # Frozen copy of the dataset_versions row at training start time.
+    # Lets us interpret old runs even if the version row is later deleted.
+    dataset_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # What the recommendation engine returned at start. Compare to `params`
+    # to see what the user changed.
+    recommendation_snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # 'recommended' | 'default' | 'manual'
+    preset_source: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Did the user click "Train anyway" despite blockers?
+    override_blockers: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    # Git SHA or release tag of the backend at training start.
+    app_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ---- lifecycle ----
     message: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -72,6 +108,11 @@ class TrainingMetric(Base):
     map50: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
     map5095: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
     extra: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    # Per-class precision/recall/map at this epoch (typically only populated
+    # on the final epoch by Ultralytics). Empty dict otherwise.
+    per_class: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     recorded_at: Mapped[datetime] = mapped_column(

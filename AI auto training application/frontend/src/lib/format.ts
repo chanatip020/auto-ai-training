@@ -29,7 +29,15 @@ export function timeAgo(iso: string | null | undefined): string {
   return `${Math.round(diff / 86400)}d ago`;
 }
 
-export function num(v: number | null | undefined, digits = 4): string {
-  if (v == null) return '—';
-  return v.toFixed(digits);
+export function num(
+  v: number | string | null | undefined,
+  digits = 4
+): string {
+  if (v == null || v === '') return '—';
+
+  const n = Number(v);
+
+  if (!Number.isFinite(n)) return '—';
+
+  return n.toFixed(digits);
 }

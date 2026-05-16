@@ -10,6 +10,7 @@ import { CvatComingSoonPage } from './features/cvat/CvatComingSoonPage';
 import { AnalysisPage } from './features/analysis/AnalysisPage';
 import { TrainingStartPage } from './features/training/TrainingStartPage';
 import { TrainingMonitorPage } from './features/training/TrainingMonitorPage';
+import { TrainingHistoryPage } from './features/training/TrainingHistoryPage';
 import { SettingsPage } from './features/settings/SettingsPage';
 
 export default function App() {
@@ -25,6 +26,7 @@ export default function App() {
           <Route path="projects/:id/cvat" element={<CvatComingSoonPage />} />
           <Route path="projects/:id/analyze/:versionId" element={<AnalysisPage />} />
           <Route path="projects/:id/train" element={<TrainingStartPage />} />
+          <Route path="projects/:id/history" element={<TrainingHistoryPage />} />
           <Route path="projects/:id/train/:jobId" element={<TrainingMonitorPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFound />} />

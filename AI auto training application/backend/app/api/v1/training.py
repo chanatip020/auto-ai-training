@@ -18,8 +18,11 @@ from app.models.training import TrainingArtifact, TrainingJob
 from app.realtime.sse import event_stream
 from app.schemas.envelope import Envelope, ok
 from app.schemas.training import (
+    CloneConfigOut,
     TrainingArtifactOut,
     TrainingArtifactsOut,
+    TrainingHistoryItem,
+    TrainingHistoryOut,
     TrainingJobListOut,
     TrainingJobOut,
     TrainingMetricOut,
@@ -63,7 +66,13 @@ async def start_training(
         })
 
     tj = await training_runner.start_training(
-        session, project=project, dataset_version=version, params=payload.params,
+        session,
+        project=project,
+        dataset_version=version,
+        params=payload.params,
+        preset_source=payload.preset_source,
+        override_blockers=payload.override_blockers,
+        recommendation_snapshot=payload.recommendation_snapshot,
     )
     await session.commit()
 
@@ -245,3 +254,77 @@ async def sse_training(
             "X-Accel-Buffering": "no",  # tell nginx not to buffer
         },
     )
+
+
+# ---------- Phase 8: history + clone-as-config ----------
+from sqlalchemy import func
+
+
+@router.get(
+    "/projects/{project_id}/training-history",
+    response_model=Envelope[TrainingHistoryOut],
+)
+async def training_history(
+    project_id: uuid.UUID,
+    status_filter: JobStatus | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: CurrentUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Envelope[TrainingHistoryOut]:
+    """Paginated, optionally-filtered list of past training jobs for a project.
+
+    Returns the same TrainingJob rows but with the lighter `TrainingHistoryItem`
+    schema (no full summary blob, no recommendation_snapshot) so the UI table
+    stays snappy. The detail page still uses `GET /training-jobs/{id}` for
+    the full payload.
+    """
+    await project_svc.get_project(session, project_id, user_id=uuid.UUID(user.id))
+
+    base = select(TrainingJob).where(TrainingJob.project_id == project_id)
+    if status_filter is not None:
+        base = base.where(TrainingJob.status == status_filter)
+
+    count_stmt = select(func.count()).select_from(base.subquery())
+    total = (await session.execute(count_stmt)).scalar_one()
+
+    rows = list((await session.execute(
+        base.order_by(desc(TrainingJob.created_at)).limit(limit).offset(offset)
+    )).scalars())
+
+    return ok(TrainingHistoryOut(
+        items=[TrainingHistoryItem.model_validate(r) for r in rows],
+        total=total,
+    ))
+
+
+@router.get(
+    "/training-jobs/{training_job_id}/clone-as-config",
+    response_model=Envelope[CloneConfigOut],
+)
+async def clone_as_config(
+    training_job_id: uuid.UUID,
+    user: CurrentUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Envelope[CloneConfigOut]:
+    """Return the params + readiness state needed to POST a new run that
+    reproduces the given training job's configuration.
+
+    Used by the frontend "Re-run with these params" button. We don't
+    automatically pick the same dataset version if it no longer exists —
+    the frontend is responsible for falling back to the latest converted
+    version of the same dataset in that case.
+    """
+    tj = await session.get(TrainingJob, training_job_id)
+    if tj is None:
+        from fastapi import HTTPException
+        raise HTTPException(404, detail={
+            "code": "TRAINING_JOB_NOT_FOUND", "message": "Training job not found.", "details": {},
+        })
+    await project_svc.get_project(session, tj.project_id, user_id=uuid.UUID(user.id))
+    return ok(CloneConfigOut(
+        dataset_version_id=tj.dataset_version_id,
+        params=dict(tj.params),
+        preset_source="manual",  # cloned configs are by definition manual edits
+        override_blockers=tj.override_blockers,
+    ))

@@ -41,6 +41,12 @@ def _is_mock() -> bool:
     return os.environ.get("TRAINING_MOCK", "0") == "1"
 
 
+def _ultralytics_available() -> bool:
+    """Cheap probe — checks if the import would succeed without doing it."""
+    import importlib.util
+    return importlib.util.find_spec("ultralytics") is not None
+
+
 def _uri_to_local(uri: str) -> Path:
     p = urlparse(uri)
     if p.scheme != "file":
@@ -62,12 +68,43 @@ async def start_training(
     project: Project,
     dataset_version: DatasetVersion,
     params: dict,
+    preset_source: str | None = None,
+    override_blockers: bool = False,
+    recommendation_snapshot: dict | None = None,
 ) -> TrainingJob:
     if dataset_version.format == "raw":
         raise AppError(
             "TRAIN_NEEDS_CONVERTED",
             "Training requires a converted dataset (yolo-det/seg/cls), not raw.",
             status_code=400,
+        )
+
+    # Pre-flight: fail fast if the runtime can't actually train.
+    # Without this check, the request returns 202 and the user has to wait
+    # for the background job to fail before seeing the error.
+    if not _is_mock() and not _ultralytics_available():
+        raise AppError(
+            "ULTRALYTICS_NOT_INSTALLED",
+            (
+                "The 'ultralytics' package is not installed in the API container. "
+                "Pick one of:\n"
+                "  1) Install now (fast, lost on container rebuild):\n"
+                "       docker compose exec api pip install ultralytics\n"
+                "     or:  make install-training\n"
+                "  2) Bake it in permanently — uncomment the "
+                "`pip install -e .[training]` line in backend/Dockerfile "
+                "and rebuild: `docker compose build --no-cache api`.\n"
+                "  3) Train in MOCK mode (no real training, useful for UI demos): "
+                "set `TRAINING_MOCK=1` in backend/.env and `docker compose restart api`."
+            ),
+            status_code=400,
+            details={
+                "remediation_options": [
+                    "docker compose exec api pip install ultralytics",
+                    "uncomment 'pip install -e .[training]' in backend/Dockerfile and rebuild",
+                    "set TRAINING_MOCK=1 in backend/.env",
+                ],
+            },
         )
 
     # Fill in missing params from a baseline default.
@@ -83,6 +120,16 @@ async def start_training(
     }
     final_params = {**defaults, **params}
 
+    # Provenance snapshot — frozen at start time so the run is self-describing
+    # even if the dataset version is deleted later.
+    from app.services.training.provenance import (
+        app_version, dataset_snapshot, hardware_fingerprint,
+        params_diff_vs_recommendation,
+    )
+    ds_snap = dataset_snapshot(dataset_version)
+    hw = hardware_fingerprint()
+    diff = params_diff_vs_recommendation(final_params, recommendation_snapshot)
+
     tj = TrainingJob(
         project_id=project.id,
         dataset_version_id=dataset_version.id,
@@ -90,6 +137,16 @@ async def start_training(
         progress=0,
         total_epochs=int(final_params.get("epochs", 50)),
         params=final_params,
+        # provenance columns (added in migration 0005)
+        dataset_snapshot=ds_snap,
+        recommendation_snapshot=recommendation_snapshot,
+        preset_source=preset_source,
+        override_blockers=override_blockers,
+        app_version=app_version(),
+        summary={
+            "hardware_at_start": hw,
+            "diff_vs_recommendation": diff,
+        },
     )
     session.add(tj)
     await session.flush()
@@ -98,7 +155,13 @@ async def start_training(
         session,
         project_id=project.id,
         event="training.started",
-        payload={"training_job_id": str(tj.id), "params": final_params},
+        payload={
+            "training_job_id": str(tj.id),
+            "params": final_params,
+            "preset_source": preset_source,
+            "override_blockers": override_blockers,
+            "n_params_changed_from_rec": len(diff["changed"]),
+        },
     )
 
     # Advance project status -> training
@@ -185,6 +248,40 @@ async def run_training_job(training_job_id: uuid.UUID) -> None:
             f"Done — best metric {float(tj.best_metric):.4f}" if tj.best_metric is not None
             else "Done"
         )
+
+        # Compute completion summary: total time, best epoch, exit reason.
+        # We compute best_epoch by scanning training_metrics for the row that
+        # matches tj.best_metric. Cheap (< few hundred rows per run).
+        from sqlalchemy import select as _sa_select
+        from app.models.training import TrainingMetric as _TM
+        best_epoch = None
+        if tj.best_metric is not None:
+            row = (await session.execute(
+                _sa_select(_TM.epoch).where(
+                    _TM.training_job_id == tj.id,
+                    _TM.map5095 == tj.best_metric,
+                ).limit(1)
+            )).first()
+            if row:
+                best_epoch = int(row[0])
+        elapsed = None
+        if tj.started_at and tj.finished_at:
+            elapsed = (tj.finished_at - tj.started_at).total_seconds()
+
+        # Merge new summary fields into the existing dict (set at start).
+        existing_summary = dict(tj.summary or {})
+        existing_summary.update({
+            "best_epoch": best_epoch,
+            "total_time_s": elapsed,
+            "n_epochs_completed": tj.current_epoch or 0,
+            "exit_reason": (
+                "succeeded" if tj.status == JobStatus.SUCCEEDED
+                else "cancelled" if tj.status == JobStatus.CANCELLED
+                else "failed" if tj.status == JobStatus.FAILED
+                else "unknown"
+            ),
+        })
+        tj.summary = existing_summary
         await session.commit()
 
         # Record artifacts

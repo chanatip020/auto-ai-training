@@ -119,3 +119,6 @@ Please design:
 - Step-by-step development roadmap
 
 Make the answer practical, clean, scalable, and suitable for real production software.
+
+write one paragraph in a DECISIONS.md at the repo root:
+
