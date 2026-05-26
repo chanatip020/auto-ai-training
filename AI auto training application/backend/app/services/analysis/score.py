@@ -56,6 +56,12 @@ def compute(findings: dict) -> tuple[float, dict[str, float]]:
     n_images = counts.get("image_count", 0)
     missing_ratio = label_health.get("missing_ratio", 0.0) or 0.0
     empty_ratio = label_health.get("empty_ratio", 0.0) or 0.0
+    treat_bg = bool(label_health.get("treat_unlabeled_as_background", False))
+    # When the user opted into background-image mode, missing/empty labels
+    # are intentional zero-object frames — don't penalise them.
+    if treat_bg:
+        missing_ratio = 0.0
+        empty_ratio = 0.0
     dup_imgs = dup.get("duplicate_images", 0) or 0
     dup_ratio = dup_imgs / n_images if n_images else 0.0
     corr_count = len(corr.get("corrupt", []) or [])

@@ -2,9 +2,11 @@
 from app.models.analysis import Analysis  # noqa: F401
 from app.models.audit_log import AuditLog  # noqa: F401
 from app.models.base import Base  # noqa: F401
+from app.models.cvat import CvatConnection, CvatImport  # noqa: F401
 from app.models.dataset import Dataset, DatasetVersion  # noqa: F401
 from app.models.enums import (  # noqa: F401
     ArtifactKind,
+    CvatSourceType,
     DatasetSource,
     JobKind,
     JobStatus,
@@ -19,4 +21,5 @@ from app.models.user import User  # noqa: F401
 
 
 def register_all() -> None:
+    """No-op anchor used by alembic/env.py to ensure all imports run."""
     return None

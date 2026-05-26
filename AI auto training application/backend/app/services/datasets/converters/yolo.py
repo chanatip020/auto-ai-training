@@ -1,7 +1,7 @@
 """YOLO detection + segmentation converter.
 
 Detection and segmentation share an identical *file organization* in YOLO
-format — both have:
+format -- both have:
 
     images/{train,val,test}/<name>.<ext>
     labels/{train,val,test}/<name>.txt
@@ -42,11 +42,27 @@ def _index_files(root: Path) -> tuple[list[Path], dict[str, Path]]:
 
 
 def _resolve_classes(root: Path, override: list[str] | None) -> list[str]:
+    """Resolve the YOLO class list.
+
+    Search order:
+      1. caller-supplied override
+      2. classes.txt / names.txt at the root (standard YOLO)
+      3. obj.names at the root (CVAT YOLO 1.1 export)
+      4. any of the above one level deep (CVAT sometimes nests in obj_train_data/)
+    """
     if override:
         return list(override)
-    # Prefer classes.txt / names.txt at the root.
-    for name in ("classes.txt", "names.txt"):
-        p = root / name
+
+    candidates: list[Path] = []
+    for name in ("classes.txt", "names.txt", "obj.names"):
+        candidates.append(root / name)
+    if root.exists():
+        for sub in root.iterdir():
+            if sub.is_dir():
+                for name in ("classes.txt", "names.txt", "obj.names"):
+                    candidates.append(sub / name)
+
+    for p in candidates:
         if p.exists():
             return [ln.strip() for ln in p.read_text(encoding="utf-8").splitlines() if ln.strip()]
     return []
@@ -65,6 +81,7 @@ class _YoloFileConverter(BaseConverter):
         ratios: dict[str, float],
         classes_override: list[str] | None,
         seed: uuid.UUID,
+        treat_unlabeled_as_background: bool = False,
     ) -> ConversionResult:
         if not input_dir.exists():
             raise AppError("CONVERT_NO_INPUT",
@@ -82,8 +99,9 @@ class _YoloFileConverter(BaseConverter):
         if not classes:
             raise AppError(
                 "CONVERT_NO_CLASSES",
-                "Classes are not defined. Provide classes_override or include "
-                "classes.txt in the upload.",
+                "Classes are not defined. Include classes.txt / names.txt "
+                "(standard YOLO) or obj.names (CVAT YOLO 1.1 export) in the "
+                "upload, or pass classes_override when starting the conversion.",
                 status_code=400,
             )
 
@@ -104,38 +122,67 @@ class _YoloFileConverter(BaseConverter):
             (output_dir / sub).mkdir(parents=True, exist_ok=True)
 
         counts: dict[str, int] = {}
-        orphan_count = 0
+        # Orphan images come in two flavours:
+        #  - intentional background images (treat_unlabeled_as_background=True):
+        #    we materialize an empty .txt sidecar so Ultralytics treats them
+        #    as explicit zero-object frames. Recommender will skip the
+        #    "missing labels" blocker for these.
+        #  - accidentally unlabeled images (default):
+        #    we copy the image without a .txt and surface the count to the
+        #    recommender, which decides whether it's a warning or blocker.
+        background_count = 0
+        unlabeled_count = 0
         labels_written = 0
         for split_name in ("train", "val", "test"):
             pairs = getattr(split, split_name)
             counts[split_name] = len(pairs)
             for img, lbl in pairs:
-                # Copy image with original extension
                 dst_img = output_dir / "images" / split_name / img.name
                 shutil.copyfile(img, dst_img)
                 if lbl is not None:
                     dst_lbl = output_dir / "labels" / split_name / (img.stem + ".txt")
                     shutil.copyfile(lbl, dst_lbl)
                     labels_written += 1
+                elif treat_unlabeled_as_background:
+                    # Write an empty .txt sidecar — the YOLO convention for
+                    # "this image is an intentional background, zero objects."
+                    dst_lbl = output_dir / "labels" / split_name / (img.stem + ".txt")
+                    dst_lbl.write_text("")
+                    background_count += 1
                 else:
-                    orphan_count += 1
+                    unlabeled_count += 1
 
         write_data_yaml(output_dir=output_dir, classes=classes,
                         has_test=counts.get("test", 0) > 0)
 
         notes: list[str] = []
-        if orphan_count:
-            notes.append(f"{orphan_count} image(s) had no matching .txt label; "
-                         "they were copied without labels.")
+        if background_count:
+            notes.append(
+                f"{background_count} image(s) had no .txt label; an empty "
+                f"sidecar was written for each (treated as background)."
+            )
+        if unlabeled_count:
+            notes.append(
+                f"{unlabeled_count} image(s) had no matching .txt label; "
+                "they were copied without labels."
+            )
 
         return ConversionResult(
             format=self.format_id,
             classes=classes,
             num_images=len(images),
-            num_labels=labels_written,
+            # Empty .txt sidecars count as labels-on-disk so num_labels stays
+            # consistent with the file tree.
+            num_labels=labels_written + background_count,
             counts=counts,
             notes=notes,
-            extra={"ratios": ratios, "data_yaml": "data.yaml"},
+            extra={
+                "ratios": ratios,
+                "data_yaml": "data.yaml",
+                "treat_unlabeled_as_background": treat_unlabeled_as_background,
+                "background_count": background_count,
+                "unlabeled_count": unlabeled_count,
+            },
         )
 
 

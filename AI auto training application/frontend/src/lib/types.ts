@@ -29,6 +29,7 @@ export interface Dataset {
   project_id: string;
   name: string;
   source: 'upload' | 'cvat' | 'manual';
+  treat_unlabeled_as_background: boolean;
   created_at: string;
 }
 
@@ -142,6 +143,35 @@ export interface TrainingArtifact {
   storage_uri: string;
   size_bytes: number | null;
   created_at: string;
+}
+
+/* ---------- Inference (Phase 10) ---------- */
+export interface Prediction {
+  class_idx: number;
+  class_name: string;
+  confidence: number;
+  /** [x1, y1, x2, y2] in image pixels - detection/segmentation only. */
+  bbox?: [number, number, number, number] | null;
+  /** polygon points in image pixels - segmentation only. */
+  polygon?: number[][] | null;
+  /** Rank among top-5 - classification only. */
+  rank?: number | null;
+}
+
+export interface PredictionResult {
+  width: number;
+  height: number;
+  task: string;
+  predictions: Prediction[];
+}
+
+export type ExportFormat = 'onnx' | 'torchscript' | 'coreml' | 'tflite';
+
+export interface ExportResult {
+  artifact_id: string;
+  name: string;
+  storage_uri: string;
+  size_bytes: number | null;
 }
 
 /* ---------- CVAT (Phase 6) ---------- */

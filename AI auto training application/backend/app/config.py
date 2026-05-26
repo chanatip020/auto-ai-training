@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     # --- CORS ---
     CORS_ORIGINS: str = "http://localhost:5173"
 
+    # --- CVAT (Phase 12) ---
+    # Fernet key used to encrypt CVAT tokens at rest. Optional — without it,
+    # any attempt to create a CVAT connection returns CVAT_ENC_KEY_NOT_SET.
+    # Generate one with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    CVAT_ENC_KEY: str | None = None
+
     @field_validator("DATABASE_URL")
     @classmethod
     def _ensure_async_driver(cls, v: str) -> str:

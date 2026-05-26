@@ -6,7 +6,7 @@ import { DashboardPage } from './features/projects/DashboardPage';
 import { NewProjectPage } from './features/projects/NewProjectPage';
 import { ProjectDetailPage } from './features/projects/ProjectDetailPage';
 import { DatasetUploadPage } from './features/datasets/DatasetUploadPage';
-import { CvatComingSoonPage } from './features/cvat/CvatComingSoonPage';
+import { CvatImportPage } from './features/cvat/CvatImportPage';
 import { AnalysisPage } from './features/analysis/AnalysisPage';
 import { TrainingStartPage } from './features/training/TrainingStartPage';
 import { TrainingMonitorPage } from './features/training/TrainingMonitorPage';
@@ -23,7 +23,7 @@ export default function App() {
           <Route path="projects/new" element={<NewProjectPage />} />
           <Route path="projects/:id" element={<ProjectDetailPage />} />
           <Route path="projects/:id/dataset" element={<DatasetUploadPage />} />
-          <Route path="projects/:id/cvat" element={<CvatComingSoonPage />} />
+          <Route path="projects/:id/cvat" element={<CvatImportPage />} />
           <Route path="projects/:id/analyze/:versionId" element={<AnalysisPage />} />
           <Route path="projects/:id/train" element={<TrainingStartPage />} />
           <Route path="projects/:id/history" element={<TrainingHistoryPage />} />

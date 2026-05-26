@@ -43,29 +43,59 @@ export function DashboardPage() {
       )}
 
       {data && data.items.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {data.items.map((p) => (
-            <Link key={p.id} to={`/projects/${p.id}`} className="group">
-              <Card className="transition group-hover:border-blue-400 group-hover:shadow-md">
-                <CardBody>
-                  <div className="flex items-start justify-between gap-2">
-                    <h3 className="truncate text-sm font-semibold text-slate-900">
-                      {p.name}
-                    </h3>
-                    <StatusPill status={p.status} />
-                  </div>
-                  <p className="mt-1 line-clamp-2 text-xs text-slate-500">
-                    {p.description || '— no description —'}
-                  </p>
-                  <div className="mt-4 flex items-center justify-between text-[11px] text-slate-500">
-                    <span className="uppercase tracking-wider">{p.model_family} / {p.task_type}</span>
-                    <span>Created {timeAgo(p.created_at)}</span>
-                  </div>
-                </CardBody>
-              </Card>
-            </Link>
-          ))}
-        </div>
+        <Card>
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50">
+                <tr className="text-left text-[11px] font-medium uppercase tracking-wider text-slate-500">
+                  <th className="px-4 py-2">Name</th>
+                  <th className="px-4 py-2">Model</th>
+                  <th className="px-4 py-2">Task</th>
+                  <th className="px-4 py-2">Status</th>
+                  <th className="px-4 py-2">Created</th>
+                  <th className="px-4 py-2">Updated</th>
+                  <th className="px-4 py-2 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white">
+                {data.items.map((p) => (
+                  <tr key={p.id} className="hover:bg-slate-50">
+                    <td className="px-4 py-3">
+                      <Link
+                        to={`/projects/${p.id}`}
+                        className="font-medium text-slate-900 hover:text-blue-600 hover:underline"
+                      >
+                        {p.name}
+                      </Link>
+                      {p.description ? (
+                        <div className="mt-0.5 line-clamp-1 text-xs text-slate-500">
+                          {p.description}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-3 text-xs uppercase tracking-wider text-slate-600">
+                      {p.model_family}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-600">{p.task_type}</td>
+                    <td className="px-4 py-3">
+                      <StatusPill status={p.status} />
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{timeAgo(p.created_at)}</td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{timeAgo(p.updated_at)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <Link
+                        to={`/projects/${p.id}`}
+                        className="text-xs font-medium text-blue-600 hover:underline"
+                      >
+                        Open →
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       )}
     </div>
   );

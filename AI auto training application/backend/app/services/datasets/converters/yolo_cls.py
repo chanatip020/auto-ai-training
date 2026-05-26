@@ -71,7 +71,12 @@ class YoloClassificationConverter(BaseConverter):
         ratios: dict[str, float],
         classes_override: list[str] | None,
         seed: uuid.UUID,
+        treat_unlabeled_as_background: bool = False,
     ) -> ConversionResult:
+        # No-op for classification: every image is implicitly labeled by its
+        # parent folder name. We accept the flag to keep a uniform interface.
+        _ = treat_unlabeled_as_background
+
         if not input_dir.exists():
             raise AppError("CONVERT_NO_INPUT",
                            f"Input directory missing: {input_dir}", 400)

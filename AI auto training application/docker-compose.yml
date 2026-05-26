@@ -1,12 +1,48 @@
 # Production / "one command up" compose for the AI Auto Training Platform.
 #
-# `docker compose up --build`                                — dev (uses override below)
-# `docker compose -f docker-compose.yml up --build`           — production-style
+# Quick start (self-contained, no Supabase, no extra config):
+#   cp backend/.env.example backend/.env       # only needed once
+#   docker compose up --build
+#   -> API:  http://localhost:8000
+#   -> Web:  http://localhost:5173
 #
-# Both services run on the same docker bridge network; the frontend nginx
-# proxies /api → api:8000 internally, so users only need to expose ONE port.
+# Three services boot together: db (Postgres 16) -> api (FastAPI) -> web
+# (nginx serving the React bundle). The api auto-runs `alembic upgrade head`
+# on start, so the database is ready before the first request.
+#
+# Modes:
+#   docker compose up --build                        -- dev (uses override)
+#   docker compose -f docker-compose.yml up --build  -- production-style
+#
+# Bring-your-own database (e.g. Supabase): set DATABASE_URL in the
+# project-root `.env` file or your shell. It takes precedence over the
+# local-Postgres default. The `db` service can be left running or skipped
+# via `docker compose up api web`.
 
 services:
+  # ---------- Postgres (local default) ----------
+  db:
+    image: postgres:16-alpine
+    container_name: aiat-db
+    environment:
+      POSTGRES_USER: aiat
+      POSTGRES_PASSWORD: aiat
+      POSTGRES_DB: aiat
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    # Exposed on a non-default port so it doesn't collide with a host-side
+    # Postgres install. Inside the docker network the api still uses 5432.
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiat -d aiat"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # ---------- API ----------
   api:
     build:
       context: ./backend
@@ -20,8 +56,14 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       STORAGE_BACKEND: local
       STORAGE_ROOT: /data
+      # Default to the local-Postgres service. Override by setting
+      # DATABASE_URL in the project-root .env or your shell (e.g. Supabase).
+      DATABASE_URL: "${DATABASE_URL:-postgresql+asyncpg://aiat:aiat@db:5432/aiat}"
     volumes:
       - ./data:/data
+    depends_on:
+      db:
+        condition: service_healthy
     expose:
       - "8000"
     ports:
@@ -34,8 +76,9 @@ services:
       interval: 15s
       timeout: 3s
       retries: 5
-      start_period: 15s
+      start_period: 20s
 
+  # ---------- Web (nginx + built SPA) ----------
   web:
     build:
       context: ./frontend
@@ -48,3 +91,6 @@ services:
     ports:
       - "5173:80"   # browse http://localhost:5173
     restart: unless-stopped
+
+volumes:
+  db-data:

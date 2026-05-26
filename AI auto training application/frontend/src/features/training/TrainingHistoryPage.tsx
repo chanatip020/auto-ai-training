@@ -8,6 +8,7 @@ import { StatusPill } from '../../components/StatusPill';
 import { num, timeAgo } from '../../lib/format';
 import { useProject } from '../projects/api';
 import { useTrainingHistory, type TrainingHistoryItem } from './api';
+import { OverlayMetricsChart } from './OverlayMetricsChart';
 
 type SortKey = 'created_at' | 'best_metric' | 'epochs' | 'model';
 type SortDir = 'asc' | 'desc';
@@ -170,6 +171,24 @@ export function TrainingHistoryPage() {
           <CardHeader title="Side-by-side comparison" subtitle="Param differences highlighted in blue." />
           <CardBody>
             <CompareTwo a={compareItems[0]} b={compareItems[1]} />
+          </CardBody>
+        </Card>
+      )}
+
+      {compareItems && compareItems.length === 2 && (
+        <Card className="mt-4">
+          <CardHeader
+            title="Metrics overlay"
+            subtitle="Loss / mAP curves of the two selected runs on one chart."
+          />
+          <CardBody>
+            <OverlayMetricsChart
+              runs={compareItems.map((r, i) => ({
+                id: r.id,
+                label: `${String.fromCharCode(65 + i)} · ${String(r.params.model ?? '?')}`
+                       + ` · best ${num(r.best_metric, 3)}`,
+              }))}
+            />
           </CardBody>
         </Card>
       )}

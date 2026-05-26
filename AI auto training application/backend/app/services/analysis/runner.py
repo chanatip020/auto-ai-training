@@ -64,6 +64,16 @@ async def run_analysis(session: AsyncSession, job: Job) -> None:
             details={"format": version.format},
         )
 
+    # Find the dataset's stored background flag. Prefer the per-version
+    # summary (captured at conversion time) when present, otherwise read
+    # the dataset row's preference.
+    summary = version.summary or {}
+    treat_bg = summary.get("treat_unlabeled_as_background")
+    if treat_bg is None:
+        ds = await session.get(Dataset, version.dataset_id)
+        treat_bg = bool(ds.treat_unlabeled_as_background) if ds else False
+    treat_bg = bool(treat_bg)
+
     job.status = JobStatus.RUNNING
     job.message = "Scanning files"
     job.progress = 10
@@ -72,7 +82,11 @@ async def run_analysis(session: AsyncSession, job: Job) -> None:
     version_root = _uri_to_local(version.storage_uri)
 
     # Run sync checks in a worker thread to keep the event loop responsive.
-    findings = await asyncio.to_thread(checks.run_all_checks, version_root)
+    findings = await asyncio.to_thread(
+        checks.run_all_checks,
+        version_root,
+        treat_unlabeled_as_background=treat_bg,
+    )
 
     job.message = "Scoring"
     job.progress = 80

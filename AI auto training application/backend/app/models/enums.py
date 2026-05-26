@@ -1,10 +1,12 @@
 """Python-side mirrors of the Postgres enum types."""
 from __future__ import annotations
+
 from enum import Enum
 
 
 class _StrEnum(str, Enum):
     """Backport of 3.11's enum.StrEnum so this module loads on 3.10 too."""
+
     def __str__(self) -> str:
         return self.value
 
@@ -58,3 +60,8 @@ class ArtifactKind(_StrEnum):
     LOG = "log"
     EXPORT = "export"
     OTHER = "other"
+
+
+class CvatSourceType(_StrEnum):
+    PROJECT = "cvat_project"
+    TASK = "cvat_task"

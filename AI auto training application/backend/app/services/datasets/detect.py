@@ -14,7 +14,11 @@ LABEL_XML_EXTS = {".xml"}
 LABEL_JSON_EXTS = {".json"}
 
 # Filenames that look like .txt but are not annotation labels.
-NON_LABEL_TXT = {"classes.txt", "names.txt", "labels.txt", "readme.txt"}
+NON_LABEL_TXT = {
+    "classes.txt", "names.txt", "labels.txt", "readme.txt",
+    # CVAT YOLO 1.1 export sidecars (not per-image label files)
+    "train.txt", "val.txt", "valid.txt", "test.txt", "obj.names", "obj.data",
+}
 
 
 @dataclass
@@ -33,8 +37,8 @@ def _iter_files(root: Path):
 
 
 def _read_yolo_classes(root: Path) -> list[str]:
-    """Best-effort classes.txt / data.yaml class extraction."""
-    for name in ("classes.txt", "names.txt"):
+    """Best-effort classes.txt / data.yaml / obj.names class extraction."""
+    for name in ("classes.txt", "names.txt", "obj.names"):
         f = root / name
         if f.exists():
             try:

@@ -12,6 +12,15 @@ from app.models.enums import DatasetSource
 class DatasetCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     source: DatasetSource = DatasetSource.UPLOAD
+    treat_unlabeled_as_background: bool = Field(
+        default=False,
+        description=(
+            "When true, images shipped without a label file are treated as "
+            "intentional background images (no objects, used to reduce false "
+            "positives) instead of missing annotations. Recommended 0-10% of "
+            "the dataset per Ultralytics best practice."
+        ),
+    )
 
 
 class DatasetOut(BaseModel):
@@ -21,7 +30,15 @@ class DatasetOut(BaseModel):
     project_id: uuid.UUID
     name: str
     source: DatasetSource
+    treat_unlabeled_as_background: bool
     created_at: datetime
+
+
+class DatasetUpdate(BaseModel):
+    """Patch shape for PATCH /datasets/{id}.
+
+    Only fields the user is allowed to flip post-creation."""
+    treat_unlabeled_as_background: bool | None = None
 
 
 class DatasetVersionOut(BaseModel):
@@ -70,4 +87,12 @@ class DatasetConvertRequest(BaseModel):
     classes_override: list[str] | None = Field(
         default=None,
         description="Explicit class list. Overrides any classes.txt in the upload.",
+    )
+    treat_unlabeled_as_background: bool | None = Field(
+        default=None,
+        description=(
+            "Per-convert override of the dataset's "
+            "treat_unlabeled_as_background flag. When omitted, the dataset's "
+            "stored preference is used."
+        ),
     )

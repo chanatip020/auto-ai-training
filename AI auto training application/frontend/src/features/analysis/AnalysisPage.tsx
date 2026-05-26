@@ -32,6 +32,26 @@ export function AnalysisPage() {
   const a = analysis.data;
   const hasReport = !!a;
 
+  // Pull the label-health bucket out of findings so we can render a dedicated
+  // "background images" stat alongside the existing health components.
+  const labelHealth = (a?.findings?.checks as Record<string, unknown> | undefined)
+    ?.label_health as
+      | {
+          missing?: number;
+          empty?: number;
+          background?: number;
+          background_ratio?: number;
+          treat_unlabeled_as_background?: boolean;
+          image_count?: number;
+        }
+      | undefined;
+  const totalImages =
+    ((a?.findings?.checks as Record<string, unknown> | undefined)?.counts as
+      | { image_count?: number }
+      | undefined)?.image_count ??
+    labelHealth?.image_count ??
+    0;
+
   // Split params into basic vs augmentation using the optional `groups` field.
   const grouped = useMemo(() => {
     const params = trainingRec.data?.params ?? {};
@@ -97,6 +117,42 @@ export function AnalysisPage() {
                     {a.ready_for_training ? 'YES' : 'NO'}
                   </strong>
                 </div>
+                {labelHealth && (
+                  <div className="mt-4 space-y-1 border-t border-slate-200 pt-3 text-[11px] text-slate-600">
+                    <div className="font-semibold uppercase tracking-wider text-slate-500">
+                      Label coverage
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Total images</span>
+                      <span className="font-mono">{totalImages}</span>
+                    </div>
+                    {labelHealth.treat_unlabeled_as_background ? (
+                      <div className="flex justify-between text-emerald-700">
+                        <span>Background images</span>
+                        <span className="font-mono">
+                          {labelHealth.background ?? 0}
+                          {labelHealth.background_ratio != null && totalImages > 0 && (
+                            <span className="text-slate-500">
+                              {' '}
+                              ({(labelHealth.background_ratio * 100).toFixed(1)}%)
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex justify-between">
+                          <span>Missing labels</span>
+                          <span className="font-mono">{labelHealth.missing ?? 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span>Empty labels</span>
+                          <span className="font-mono">{labelHealth.empty ?? 0}</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </CardBody>
             </Card>
 

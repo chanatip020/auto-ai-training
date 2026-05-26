@@ -1,22 +1,23 @@
-"""Training endpoints (Phase 5)."""
+"""Training endpoints (Phases 5 + 8 + 10)."""
 from __future__ import annotations
 
-import asyncio
+import shutil
 import uuid
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse, StreamingResponse
-from sqlalchemy import desc, select
+from sqlalchemy import asc, desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import CurrentUser, current_user
 from app.db import get_session
 from app.models.dataset import Dataset, DatasetVersion
-from app.models.enums import JobStatus
+from app.models.enums import ArtifactKind, JobStatus
 from app.models.training import TrainingArtifact, TrainingJob
 from app.realtime.sse import event_stream
 from app.schemas.envelope import Envelope, ok
+from app.schemas.inference import ExportRequest, ExportResult, PredictionResult
 from app.schemas.training import (
     CloneConfigOut,
     TrainingArtifactOut,
@@ -30,8 +31,10 @@ from app.schemas.training import (
     TrainingStartRequest,
 )
 from app.services import projects as project_svc
+from app.services.inference import predictor as inference
 from app.services.training import runner as training_runner
 from app.services.training import stop as stop_svc
+from app.storage import get_storage
 
 router = APIRouter(tags=["training"])
 
@@ -76,7 +79,6 @@ async def start_training(
     )
     await session.commit()
 
-    # Schedule the background runner (opens its own session)
     job_id = tj.id
 
     async def _entry() -> None:
@@ -87,10 +89,8 @@ async def start_training(
 
 
 # ---------- list / get ----------
-@router.get(
-    "/projects/{project_id}/training-jobs",
-    response_model=Envelope[TrainingJobListOut],
-)
+@router.get("/projects/{project_id}/training-jobs",
+            response_model=Envelope[TrainingJobListOut])
 async def list_training_jobs(
     project_id: uuid.UUID,
     user: CurrentUser = Depends(current_user),
@@ -109,10 +109,8 @@ async def list_training_jobs(
     ))
 
 
-@router.get(
-    "/training-jobs/{training_job_id}",
-    response_model=Envelope[TrainingJobOut],
-)
+@router.get("/training-jobs/{training_job_id}",
+            response_model=Envelope[TrainingJobOut])
 async def get_training_job(
     training_job_id: uuid.UUID,
     user: CurrentUser = Depends(current_user),
@@ -120,20 +118,16 @@ async def get_training_job(
 ) -> Envelope[TrainingJobOut]:
     tj = await session.get(TrainingJob, training_job_id)
     if tj is None:
-        raise HTTPException(404, detail={
-            "code": "TRAINING_JOB_NOT_FOUND",
-            "message": "Training job not found.",
-            "details": {},
-        })
+        raise HTTPException(404, detail={"code": "TRAINING_JOB_NOT_FOUND",
+                                         "message": "Training job not found.",
+                                         "details": {}})
     await project_svc.get_project(session, tj.project_id, user_id=uuid.UUID(user.id))
     return ok(TrainingJobOut.model_validate(tj))
 
 
 # ---------- metrics ----------
-@router.get(
-    "/training-jobs/{training_job_id}/metrics",
-    response_model=Envelope[TrainingMetricsOut],
-)
+@router.get("/training-jobs/{training_job_id}/metrics",
+            response_model=Envelope[TrainingMetricsOut])
 async def get_metrics(
     training_job_id: uuid.UUID,
     user: CurrentUser = Depends(current_user),
@@ -150,10 +144,8 @@ async def get_metrics(
 
 
 # ---------- artifacts ----------
-@router.get(
-    "/training-jobs/{training_job_id}/artifacts",
-    response_model=Envelope[TrainingArtifactsOut],
-)
+@router.get("/training-jobs/{training_job_id}/artifacts",
+            response_model=Envelope[TrainingArtifactsOut])
 async def list_artifacts(
     training_job_id: uuid.UUID,
     user: CurrentUser = Depends(current_user),
@@ -166,9 +158,7 @@ async def list_artifacts(
                                          "details": {}})
     await project_svc.get_project(session, tj.project_id, user_id=uuid.UUID(user.id))
     rows = await training_runner.list_artifacts(session, training_job_id)
-    return ok(TrainingArtifactsOut(
-        items=[TrainingArtifactOut.model_validate(a) for a in rows],
-    ))
+    return ok(TrainingArtifactsOut(items=[TrainingArtifactOut.model_validate(a) for a in rows]))
 
 
 @router.get("/training-jobs/{training_job_id}/artifacts/{artifact_id}/download")
@@ -189,7 +179,6 @@ async def download_artifact(
         raise HTTPException(404, detail={"code": "ARTIFACT_NOT_FOUND",
                                          "message": "Artifact not found.",
                                          "details": {}})
-    # Resolve file:// URI to a path.
     p = urlparse(art.storage_uri)
     if p.scheme != "file":
         raise HTTPException(501, detail={"code": "REMOTE_STORAGE_NOT_SUPPORTED",
@@ -199,10 +188,8 @@ async def download_artifact(
 
 
 # ---------- stop ----------
-@router.post(
-    "/training-jobs/{training_job_id}/stop",
-    response_model=Envelope[TrainingJobOut],
-)
+@router.post("/training-jobs/{training_job_id}/stop",
+             response_model=Envelope[TrainingJobOut])
 async def stop_training(
     training_job_id: uuid.UUID,
     user: CurrentUser = Depends(current_user),
@@ -228,9 +215,6 @@ async def stop_training(
 @router.get("/sse/training/{training_job_id}")
 async def sse_training(
     training_job_id: uuid.UUID,
-    # Browsers can't send custom headers on EventSource; allow a token query
-    # param. v1 still validates via the standard Authorization header when
-    # called from curl / smoke tests; the UI passes ?token=… instead.
     token: str | None = None,
     user: CurrentUser = Depends(current_user),
     session: AsyncSession = Depends(get_session),
@@ -249,21 +233,13 @@ async def sse_training(
     return StreamingResponse(
         _gen(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # tell nginx not to buffer
-        },
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
 # ---------- Phase 8: history + clone-as-config ----------
-from sqlalchemy import func
-
-
-@router.get(
-    "/projects/{project_id}/training-history",
-    response_model=Envelope[TrainingHistoryOut],
-)
+@router.get("/projects/{project_id}/training-history",
+            response_model=Envelope[TrainingHistoryOut])
 async def training_history(
     project_id: uuid.UUID,
     status_filter: JobStatus | None = None,
@@ -272,59 +248,124 @@ async def training_history(
     user: CurrentUser = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Envelope[TrainingHistoryOut]:
-    """Paginated, optionally-filtered list of past training jobs for a project.
-
-    Returns the same TrainingJob rows but with the lighter `TrainingHistoryItem`
-    schema (no full summary blob, no recommendation_snapshot) so the UI table
-    stays snappy. The detail page still uses `GET /training-jobs/{id}` for
-    the full payload.
-    """
     await project_svc.get_project(session, project_id, user_id=uuid.UUID(user.id))
-
     base = select(TrainingJob).where(TrainingJob.project_id == project_id)
     if status_filter is not None:
         base = base.where(TrainingJob.status == status_filter)
-
-    count_stmt = select(func.count()).select_from(base.subquery())
-    total = (await session.execute(count_stmt)).scalar_one()
-
+    total = (await session.execute(
+        select(func.count()).select_from(base.subquery())
+    )).scalar_one()
     rows = list((await session.execute(
         base.order_by(desc(TrainingJob.created_at)).limit(limit).offset(offset)
     )).scalars())
-
     return ok(TrainingHistoryOut(
         items=[TrainingHistoryItem.model_validate(r) for r in rows],
         total=total,
     ))
 
 
-@router.get(
-    "/training-jobs/{training_job_id}/clone-as-config",
-    response_model=Envelope[CloneConfigOut],
-)
+@router.get("/training-jobs/{training_job_id}/clone-as-config",
+            response_model=Envelope[CloneConfigOut])
 async def clone_as_config(
     training_job_id: uuid.UUID,
     user: CurrentUser = Depends(current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Envelope[CloneConfigOut]:
-    """Return the params + readiness state needed to POST a new run that
-    reproduces the given training job's configuration.
-
-    Used by the frontend "Re-run with these params" button. We don't
-    automatically pick the same dataset version if it no longer exists —
-    the frontend is responsible for falling back to the latest converted
-    version of the same dataset in that case.
-    """
     tj = await session.get(TrainingJob, training_job_id)
     if tj is None:
-        from fastapi import HTTPException
-        raise HTTPException(404, detail={
-            "code": "TRAINING_JOB_NOT_FOUND", "message": "Training job not found.", "details": {},
-        })
+        raise HTTPException(404, detail={"code": "TRAINING_JOB_NOT_FOUND",
+                                         "message": "Training job not found.",
+                                         "details": {}})
     await project_svc.get_project(session, tj.project_id, user_id=uuid.UUID(user.id))
     return ok(CloneConfigOut(
         dataset_version_id=tj.dataset_version_id,
         params=dict(tj.params),
-        preset_source="manual",  # cloned configs are by definition manual edits
+        preset_source="manual",
         override_blockers=tj.override_blockers,
+    ))
+
+
+# ---------- Phase 10: inference + export ----------
+@router.post("/training-jobs/{training_job_id}/predict",
+             response_model=Envelope[PredictionResult])
+async def predict(
+    training_job_id: uuid.UUID,
+    file: UploadFile = File(...),
+    conf: float = 0.25,
+    iou: float = 0.7,
+    imgsz: int | None = None,
+    user: CurrentUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Envelope[PredictionResult]:
+    tj = await session.get(TrainingJob, training_job_id)
+    if tj is None:
+        raise HTTPException(404, detail={"code": "TRAINING_JOB_NOT_FOUND",
+                                         "message": "Training job not found.",
+                                         "details": {}})
+    await project_svc.get_project(session, tj.project_id, user_id=uuid.UUID(user.id))
+    artifacts = list((await session.execute(
+        select(TrainingArtifact)
+        .where(TrainingArtifact.training_job_id == training_job_id)
+        .order_by(asc(TrainingArtifact.created_at))
+    )).scalars())
+    image_bytes = await file.read()
+    if not image_bytes:
+        raise HTTPException(400, detail={"code": "EMPTY_FILE",
+                                         "message": "Empty upload.",
+                                         "details": {}})
+    import asyncio as _asyncio
+    result = await _asyncio.to_thread(
+        inference.predict_image, tj, artifacts, image_bytes,
+        conf=conf, iou=iou, imgsz=imgsz,
+    )
+    return ok(PredictionResult.model_validate(result))
+
+
+@router.post("/training-jobs/{training_job_id}/export",
+             response_model=Envelope[ExportResult])
+async def export_model_endpoint(
+    training_job_id: uuid.UUID,
+    payload: ExportRequest,
+    user: CurrentUser = Depends(current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Envelope[ExportResult]:
+    tj = await session.get(TrainingJob, training_job_id)
+    if tj is None:
+        raise HTTPException(404, detail={"code": "TRAINING_JOB_NOT_FOUND",
+                                         "message": "Training job not found.",
+                                         "details": {}})
+    await project_svc.get_project(session, tj.project_id, user_id=uuid.UUID(user.id))
+    artifacts = list((await session.execute(
+        select(TrainingArtifact)
+        .where(TrainingArtifact.training_job_id == training_job_id)
+        .order_by(asc(TrainingArtifact.created_at))
+    )).scalars())
+    import asyncio as _asyncio
+    exported_path = await _asyncio.to_thread(
+        inference.export_model, tj, artifacts, format=payload.format,
+    )
+    storage = get_storage()
+    target_key = f"runs/{training_job_id}/exports/{exported_path.name}"
+    target = storage.local_path(target_key)
+    if target is None:
+        raise HTTPException(500, detail={"code": "STORAGE_NOT_LOCAL",
+                                         "message": "Export currently requires local storage.",
+                                         "details": {}})
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if exported_path.resolve() != target.resolve():
+        shutil.copyfile(exported_path, target)
+    art = TrainingArtifact(
+        training_job_id=tj.id,
+        name=exported_path.name,
+        kind=ArtifactKind.EXPORT,
+        storage_uri=storage.to_uri(target_key),
+        size_bytes=target.stat().st_size if target.exists() else None,
+    )
+    session.add(art)
+    await session.flush()
+    return ok(ExportResult(
+        artifact_id=art.id,
+        name=art.name,
+        storage_uri=art.storage_uri,
+        size_bytes=art.size_bytes,
     ))

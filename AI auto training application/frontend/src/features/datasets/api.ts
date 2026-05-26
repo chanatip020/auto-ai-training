@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { api } from '../../lib/api';
+import { api, downloadWithAuth } from '../../lib/api';
 import type { Dataset, DatasetDetail, JobOut } from '../../lib/types';
 
 interface DatasetListOut { items: Dataset[]; total: number }
@@ -20,12 +20,43 @@ export function useDatasetDetail(datasetId: string | undefined) {
   });
 }
 
+interface CreateDatasetArgs {
+  name: string;
+  treat_unlabeled_as_background?: boolean;
+}
+
 export function useCreateDataset(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      api.post<Dataset>(`/api/v1/projects/${projectId}/datasets`, { name, source: 'upload' }),
+    mutationFn: (args: string | CreateDatasetArgs) => {
+      const body =
+        typeof args === 'string'
+          ? { name: args, source: 'upload' as const }
+          : {
+              name: args.name,
+              source: 'upload' as const,
+              treat_unlabeled_as_background: args.treat_unlabeled_as_background ?? false,
+            };
+      return api.post<Dataset>(`/api/v1/projects/${projectId}/datasets`, body);
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['datasets', projectId] }),
+  });
+}
+
+export function useUpdateDataset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      datasetId,
+      body,
+    }: {
+      datasetId: string;
+      body: { treat_unlabeled_as_background?: boolean };
+    }) => api.patch<Dataset>(`/api/v1/datasets/${datasetId}`, body),
+    onSuccess: (d) => {
+      qc.invalidateQueries({ queryKey: ['dataset', d.id] });
+      qc.invalidateQueries({ queryKey: ['datasets', d.project_id] });
+    },
   });
 }
 
@@ -47,6 +78,7 @@ interface ConvertBody {
   format: 'yolo-det' | 'yolo-seg' | 'yolo-cls';
   ratios?: { train: number; val: number; test: number };
   classes_override?: string[] | null;
+  treat_unlabeled_as_background?: boolean | null;
 }
 
 export function useConvert() {
@@ -55,6 +87,27 @@ export function useConvert() {
       if (!datasetId) throw new Error('datasetId is required');
       return api.post<{ job_id: string }>(`/api/v1/datasets/${datasetId}/convert`, body);
     },
+  });
+}
+
+/**
+ * Download a converted dataset version as a ZIP. The backend streams
+ * images/, labels/, and data.yaml — drop-in usable by Ultralytics YOLO.
+ * Raw versions are not exportable (400 EXPORT_RAW_NOT_SUPPORTED).
+ */
+export function useExportVersion() {
+  return useMutation({
+    mutationFn: ({
+      versionId,
+      filename,
+    }: {
+      versionId: string;
+      filename: string;
+    }) =>
+      downloadWithAuth(
+        `/api/v1/datasets/versions/${versionId}/export`,
+        filename,
+      ),
   });
 }
 

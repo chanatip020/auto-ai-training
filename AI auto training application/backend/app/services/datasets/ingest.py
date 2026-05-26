@@ -51,18 +51,52 @@ async def create_dataset(
     project_id: uuid.UUID,
     name: str,
     source: DatasetSource = DatasetSource.UPLOAD,
+    treat_unlabeled_as_background: bool = False,
     actor: str | None = None,
 ) -> Dataset:
-    ds = Dataset(project_id=project_id, name=name, source=source)
+    ds = Dataset(
+        project_id=project_id,
+        name=name,
+        source=source,
+        treat_unlabeled_as_background=treat_unlabeled_as_background,
+    )
     session.add(ds)
     await session.flush()
     await audit.record(
         session,
         project_id=project_id,
         event="dataset.created",
-        payload={"dataset_id": str(ds.id), "name": name, "source": source.value},
+        payload={
+            "dataset_id": str(ds.id),
+            "name": name,
+            "source": source.value,
+            "treat_unlabeled_as_background": treat_unlabeled_as_background,
+        },
         actor=actor,
     )
+    return ds
+
+
+async def update_dataset(
+    session: AsyncSession,
+    *,
+    dataset_id: uuid.UUID,
+    treat_unlabeled_as_background: bool | None = None,
+    actor: str | None = None,
+) -> Dataset:
+    ds = await get_dataset(session, dataset_id)
+    changes: dict[str, object] = {}
+    if treat_unlabeled_as_background is not None and ds.treat_unlabeled_as_background != treat_unlabeled_as_background:
+        ds.treat_unlabeled_as_background = treat_unlabeled_as_background
+        changes["treat_unlabeled_as_background"] = treat_unlabeled_as_background
+    if changes:
+        await audit.record(
+            session,
+            project_id=ds.project_id,
+            event="dataset.updated",
+            payload={"dataset_id": str(ds.id), "changes": changes},
+            actor=actor,
+        )
     return ds
 
 

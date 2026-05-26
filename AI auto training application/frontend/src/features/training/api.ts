@@ -1,10 +1,16 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, apiUrl } from '../../lib/api';
 import type {
+  ExportFormat,
+  ExportResult,
+  PredictionResult,
   TrainingArtifact,
   TrainingJob,
   TrainingMetric,
 } from '../../lib/types';
+
+// Re-exported so TryItPanel can pull the types from this module.
+export type { PredictionResult, ExportResult, ExportFormat } from '../../lib/types';
 
 interface TrainingJobListOut { items: TrainingJob[]; total: number }
 interface TrainingMetricsOut { items: TrainingMetric[] }
@@ -13,7 +19,7 @@ interface TrainingArtifactsOut { items: TrainingArtifact[] }
 interface StartBody {
   dataset_version_id: string;
   params: Record<string, unknown>;
-  // Phase 8 — provenance fields. All optional; backend supplies sensible defaults.
+  // Phase 8 - provenance fields. All optional; backend supplies sensible defaults.
   preset_source?: 'recommended' | 'default' | 'manual';
   override_blockers?: boolean;
   recommendation_snapshot?: Record<string, unknown> | null;
@@ -126,5 +132,51 @@ export function useCloneAsConfig(jobId: string | undefined) {
     queryKey: ['clone-config', jobId],
     queryFn: () => api.get<CloneConfig>(`/api/v1/training-jobs/${jobId}/clone-as-config`),
     enabled: !!jobId,
+  });
+}
+
+/* ---------- Phase 10: inference + export ---------- */
+
+interface PredictArgs {
+  file: File;
+  conf: number;
+  iou: number;
+  imgsz?: number;
+}
+
+/**
+ * Run prediction on one image against the trained model's best.pt.
+ * The file is uploaded as multipart; conf/iou/imgsz go on the query string
+ * (FastAPI treats primitives next to File() params as query parameters).
+ */
+export function usePredict(jobId: string) {
+  return useMutation({
+    mutationFn: ({ file, conf, iou, imgsz }: PredictArgs) => {
+      const fd = new FormData();
+      fd.append('file', file);
+      const qs = new URLSearchParams({
+        conf: String(conf),
+        iou: String(iou),
+      });
+      if (imgsz !== undefined) qs.set('imgsz', String(imgsz));
+      return api.upload<PredictionResult>(
+        `/api/v1/training-jobs/${jobId}/predict?${qs.toString()}`,
+        fd,
+      );
+    },
+  });
+}
+
+/**
+ * Export the trained model (best.pt) to a portable format. The server
+ * returns an artifact record; the file shows up in the job's artifacts list.
+ */
+export function useExportModel(jobId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (format: ExportFormat) =>
+      api.post<ExportResult>(`/api/v1/training-jobs/${jobId}/export`, { format }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: ['training-artifacts', jobId] }),
   });
 }

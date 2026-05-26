@@ -45,24 +45,89 @@ def evaluate(findings: dict, *, health_score: float) -> tuple[list[dict[str, Any
             {"image_count": n},
         ))
 
-    # Missing / empty labels
+    # ------------------------------------------------------------------
+    # Missing / empty labels — interpretation depends on whether the user
+    # opted into "treat unlabeled images as background images" on the
+    # dataset (Ultralytics recommends 0-10% background frames to reduce
+    # false positives).
+    #
+    #   * Opted IN (treat_unlabeled_as_background=True):
+    #       Zero-object images are intentional. Surface the background
+    #       ratio as INFO (or nudge them toward the 10% sweet spot), and
+    #       never block.
+    #
+    #   * Opted OUT (default):
+    #       Use a tiered judgment on the unlabeled ratio:
+    #         <=10%   -> INFO ("looks like background frames, confirm")
+    #         10-30%  -> WARNING ("likely unlabeled, please confirm")
+    #         >30%    -> BLOCKER ("looks unlabeled, fix before training")
+    # ------------------------------------------------------------------
+    treat_bg = bool(lh.get("treat_unlabeled_as_background", False))
     miss = lh.get("missing", 0)
-    if miss > 0:
-        sev = "blocker" if lh.get("missing_ratio", 0) > 0.1 else "warning"
-        recs.append(_rec(
-            "MISSING_LABELS", sev,
-            f"{miss} image(s) have no label file.",
-            "Annotate them, or remove them from the dataset before training.",
-            {"missing": miss, "ratio": lh.get("missing_ratio", 0)},
-        ))
+    miss_ratio = lh.get("missing_ratio", 0.0) or 0.0
     empty = lh.get("empty", 0)
-    if empty > 0:
-        recs.append(_rec(
-            "EMPTY_LABELS", "warning",
-            f"{empty} label file(s) are empty.",
-            "Either remove the image or add at least one annotation.",
-            {"empty": empty, "ratio": lh.get("empty_ratio", 0)},
-        ))
+    empty_ratio = lh.get("empty_ratio", 0.0) or 0.0
+
+    if treat_bg:
+        bg_count = lh.get("background", miss + empty)
+        bg_ratio = lh.get("background_ratio", (miss + empty) / max(n, 1))
+        if bg_count > 0:
+            # Ultralytics docs: "background images" should sit in 0-10%.
+            if bg_ratio > 0.20:
+                recs.append(_rec(
+                    "BACKGROUND_RATIO_HIGH", "warning",
+                    f"{bg_count} background image(s) — {bg_ratio*100:.0f}% of the dataset. "
+                    "More than ~10% can hurt recall.",
+                    "Reduce the share of label-free frames, or add more positive samples.",
+                    {"background_count": bg_count, "ratio": bg_ratio},
+                ))
+            elif bg_ratio < 0.01 and n >= 200:
+                recs.append(_rec(
+                    "BACKGROUND_RATIO_LOW", "info",
+                    f"Only {bg_count} background image(s) — {bg_ratio*100:.1f}%.",
+                    "Add a few label-free frames (target ~10%) to reduce false positives.",
+                    {"background_count": bg_count, "ratio": bg_ratio},
+                ))
+            else:
+                recs.append(_rec(
+                    "BACKGROUND_RATIO_OK", "info",
+                    f"{bg_count} background image(s) — {bg_ratio*100:.1f}% of the dataset.",
+                    None,
+                    {"background_count": bg_count, "ratio": bg_ratio},
+                ))
+    else:
+        if miss > 0:
+            if miss_ratio > 0.30:
+                sev = "blocker"
+                msg = (f"{miss} image(s) ({miss_ratio*100:.0f}%) have no label file — "
+                       "likely an annotation issue.")
+                fix = ("Annotate the missing images, remove them, or — if these are "
+                       "intentional background frames — enable "
+                       "'treat unlabeled as background' on this dataset.")
+            elif miss_ratio > 0.10:
+                sev = "warning"
+                msg = (f"{miss} image(s) ({miss_ratio*100:.0f}%) have no label file. "
+                       "This could be unlabeled images or intentional background frames.")
+                fix = ("Confirm intent: label them, drop them, or enable "
+                       "'treat unlabeled as background' on this dataset.")
+            else:
+                sev = "info"
+                msg = (f"{miss} image(s) ({miss_ratio*100:.1f}%) have no label file — "
+                       "consistent with intentional background frames.")
+                fix = ("If these are intentional, enable 'treat unlabeled as background' "
+                       "on this dataset so the recommender stops flagging them.")
+            recs.append(_rec(
+                "MISSING_LABELS", sev, msg, fix,
+                {"missing": miss, "ratio": miss_ratio},
+            ))
+        if empty > 0:
+            recs.append(_rec(
+                "EMPTY_LABELS", "warning",
+                f"{empty} label file(s) are empty.",
+                "Either annotate the image, remove it, or enable 'treat unlabeled "
+                "as background' on this dataset to mark them as intentional.",
+                {"empty": empty, "ratio": empty_ratio},
+            ))
 
     # Class balance + per-class shortage
     per_class = cd.get("images_per_class", {}) or {}
@@ -122,8 +187,11 @@ def evaluate(findings: dict, *, health_score: float) -> tuple[list[dict[str, Any
             {"median_w": median_w},
         ))
 
-    # Augmentation hint
-    if n < 1000 and lh.get("missing_ratio", 0) < 0.05:
+    # Augmentation hint — dataset is "clean enough" if either:
+    #   - opted into background mode (missing labels are intentional), OR
+    #   - actual unlabeled ratio is <5%
+    clean_enough = treat_bg or miss_ratio < 0.05
+    if n < 1000 and clean_enough:
         recs.append(_rec(
             "AUGMENT", "info",
             "Dataset is small but clean — augmentation will help generalization.",

@@ -89,3 +89,52 @@ export const api = {
 export function apiUrl(path: string): string {
   return `${BASE}${path}`;
 }
+
+/**
+ * Authenticated download — fetches a binary response with the Bearer token,
+ * then triggers a browser download via a temporary object URL. Honors the
+ * Content-Disposition filename when present; falls back to `fallbackName`.
+ */
+export async function downloadWithAuth(
+  path: string,
+  fallbackName: string,
+): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const res = await fetch(`${BASE}${path}`, { headers });
+  if (!res.ok) {
+    // The error body for a failed download is still JSON envelope shape.
+    let code = 'HTTP_ERROR';
+    let message = `HTTP ${res.status}`;
+    try {
+      const payload = await res.json();
+      if (payload?.error?.code) code = payload.error.code;
+      if (payload?.error?.message) message = payload.error.message;
+    } catch {
+      // non-JSON body — keep generic message
+    }
+    if (res.status === 401) clearToken();
+    throw new ApiError(code, message, res.status);
+  }
+
+  // Parse `Content-Disposition: attachment; filename="…"` for the name.
+  let filename = fallbackName;
+  const cd = res.headers.get('Content-Disposition') || '';
+  const m = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(cd);
+  if (m && m[1]) filename = decodeURIComponent(m[1]);
+
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}

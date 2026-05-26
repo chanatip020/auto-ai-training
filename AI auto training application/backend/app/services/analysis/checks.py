@@ -19,11 +19,16 @@ class CountReport:
 
 @dataclass
 class LabelHealthReport:
-    missing: int = 0
-    empty: int = 0
+    # Three buckets — by construction `missing + empty + labeled = image_count`.
+    missing: int = 0      # no .txt sidecar at all -> ambiguous (unlabeled vs background)
+    empty: int = 0        # .txt exists but is 0-byte
+    background: int = 0   # subset of (missing + empty) reclassified as intentional backgrounds
     image_count: int = 0
     missing_ratio: float = 0.0
     empty_ratio: float = 0.0
+    background_ratio: float = 0.0
+    # Echoed back so consumers can tell which interpretation was used.
+    treat_unlabeled_as_background: bool = False
 
 
 @dataclass
@@ -122,10 +127,22 @@ def count_files(version_root: Path) -> CountReport:
     return rep
 
 
-def label_health(version_root: Path) -> LabelHealthReport:
+def label_health(
+    version_root: Path,
+    *,
+    treat_unlabeled_as_background: bool = False,
+) -> LabelHealthReport:
+    """Classify each image as labeled, empty, or missing.
+
+    When ``treat_unlabeled_as_background`` is true, both empty-.txt and
+    missing-.txt images are reclassified as intentional ``background``
+    frames. The raw missing/empty counts are still reported so the UI can
+    surface them, but downstream recommenders should use ``background``
+    instead of treating them as defects.
+    """
     if _is_cls_layout(version_root):
-        return LabelHealthReport()
-    rep = LabelHealthReport()
+        return LabelHealthReport(treat_unlabeled_as_background=treat_unlabeled_as_background)
+    rep = LabelHealthReport(treat_unlabeled_as_background=treat_unlabeled_as_background)
     for _, _img, lbl in _iter_split_pairs(version_root):
         rep.image_count += 1
         if lbl is None:
@@ -137,9 +154,13 @@ def label_health(version_root: Path) -> LabelHealthReport:
                     rep.empty += 1
             except Exception:
                 rep.empty += 1
+    if treat_unlabeled_as_background:
+        # All zero-object images (no .txt OR empty .txt) are background.
+        rep.background = rep.missing + rep.empty
     if rep.image_count:
         rep.missing_ratio = rep.missing / rep.image_count
         rep.empty_ratio = rep.empty / rep.image_count
+        rep.background_ratio = rep.background / rep.image_count
     return rep
 
 
@@ -309,9 +330,15 @@ def corruption(version_root: Path, *, sample_limit: int = 1000) -> CorruptionRep
     return rep
 
 
-def run_all_checks(version_root: Path) -> dict[str, dict]:
+def run_all_checks(
+    version_root: Path,
+    *,
+    treat_unlabeled_as_background: bool = False,
+) -> dict[str, dict]:
     counts = count_files(version_root)
-    health = label_health(version_root)
+    health = label_health(
+        version_root, treat_unlabeled_as_background=treat_unlabeled_as_background
+    )
     classes = class_distribution(version_root)
     res = resolution_stats(version_root)
     dup = duplicates(version_root)

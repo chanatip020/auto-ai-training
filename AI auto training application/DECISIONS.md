@@ -5,6 +5,53 @@ Append one paragraph per PR-sized change. Newest at the top. See the
 
 ---
 
+## 2026-05-26 — TryItPanel cleanup + one-command docker compose
+
+Closed the last two open items from the original CLAUDE.md roadmap. The
+Phase 7 `TryItPanel.tsx` had 8 TypeScript errors because `usePredict`,
+`useExportModel`, `PredictionResult`, and `ExportResult` were referenced
+but never written into `features/training/api.ts` — the backend endpoints
+(`POST /training-jobs/{id}/predict`, `POST /training-jobs/{id}/export`)
+and `app/services/inference/predictor.py` were already in place, so this
+was purely a frontend wiring gap. Added the missing types in `lib/types.ts`,
+the missing hooks in `features/training/api.ts`, and re-exported the types
+from the training api module so the panel imports work. Full frontend
+`tsc --noEmit` is now clean. For the Docker side, `docker compose up` no
+longer requires a Supabase config — added a `db` service (Postgres 16
+alpine) with a `pg_isready` healthcheck, made the api `depends_on:
+db: service_healthy`, and defaulted `DATABASE_URL` to the local docker
+network address (`postgresql+asyncpg://aiat:aiat@db:5432/aiat`) with shell
+interpolation so an external DATABASE_URL still wins. Postgres data lives
+on a named `db-data` volume; the host port is 5433 to avoid colliding with
+local Postgres installs. Makefile gained a `make up` alias and updated
+help text explaining the self-contained mode. All 77 backend tests still
+pass. The original 11-feature roadmap is now closed; remaining work is
+the VisionOps Phase 1 items (remarks, golden val set, model registry).
+
+---
+
+## 2026-05-26 — Export dataset version as ZIP + dashboard as a table
+
+Added `GET /api/v1/datasets/versions/{id}/export` so users can pull a
+converted dataset version off the platform without poking the filesystem.
+The endpoint streams the on-disk converted folder (`images/`, `labels/`,
+`data.yaml`) into a ZIP via a small write-buffer drained between files,
+which keeps memory bounded by the largest single file rather than the whole
+dataset — important for multi-GB exports. Raw versions return 400
+(`EXPORT_RAW_NOT_SUPPORTED`) since the YOLO folder shape only exists after
+conversion. The archive matches the converter output 1:1, so it's
+drop-in usable by Ultralytics. The dashboard's card grid was swapped for a
+table (Name, Model, Task, Status, Created, Updated, Open) — the user wanted
+to scan many projects at a glance, which a table does better than cards.
+The version row in the dataset detail page now exposes an "Export ↓" button
+next to "Analyze →"; the frontend downloads via an authenticated fetch +
+Blob URL so the Bearer token stays out of the URL. Five new backend unit
+tests cover the streaming zip, chunked output, missing-data error,
+filename sanitization, and the all-unsafe-name fallback; full suite is now
+77 passing (was 72).
+
+---
+
 ## 2026-05-16 — Phase 8: training provenance + history
 
 Audited what we persist across the lifecycle and found 8 gaps on
@@ -56,3 +103,23 @@ a blue ring + "tuned" badge. Reason: users couldn't tell which knobs the
 rec engine had moved. Trade-off: hardcoded defaults map in the frontend
 will drift from Ultralytics' upstream over time — accepted because the
 diff is informational and Ultralytics versions ~yearly.
+
+## 2026-05-21 — Background images aren't defects
+
+Added a per-dataset `treat_unlabeled_as_background` flag (migration 0007) so
+that images shipped without a label file can be marked as intentional
+zero-object frames — the Ultralytics-recommended 0–10% background mix that
+reduces false positives — instead of being flagged as missing annotations.
+When the flag is on, the YOLO converter materializes empty `.txt` sidecars
+for every label-free image (the standard YOLO convention for "this frame
+has no objects"), the analyzer reclassifies them under a separate
+`background` bucket, the health-score stops penalising the missing-label
+component, and the recommender emits one of three `BACKGROUND_RATIO_*`
+hints (high/low/ok) instead of `MISSING_LABELS`. When the flag is off the
+old `MISSING_LABELS` rule becomes tiered: ≤10% is info (likely
+background), 10–30% warning, >30% blocker. Frontend gets a checkbox at
+dataset-creation time and a per-convert override on the convert form.
+Trade-off: introduces a user decision that didn't exist before, but it's
+unavoidable — there's no automatic way to tell unlabeled images from
+intentional backgrounds without asking. Picked dataset-level (not
+per-version) because the intent doesn't change between conversions.

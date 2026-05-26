@@ -8,14 +8,18 @@
 
 help:
 	@echo "Targets (compose):"
-	@echo "  make dev             Bring up the stack with hot reload (compose override)"
-	@echo "  make prod            Bring up the stack in production mode"
+	@echo "  make dev             Bring up db + api + web with hot reload (compose override)"
+	@echo "  make prod            Bring up db + api + web in production mode"
+	@echo "  make up              Alias for 'make dev' — the one-command start"
 	@echo "  make down            Stop the stack"
-	@echo "  make logs            Tail logs for both services"
+	@echo "  make logs            Tail logs for all services"
 	@echo "  make migrate         Run alembic upgrade head against the running api"
 	@echo "  make verify-db       Print schema status (tables + alembic head)"
 	@echo "  make rebuild         Rebuild images from scratch"
-	@echo "  make clean           Remove containers, volumes, and ./data"
+	@echo "  make clean           Remove containers, volumes (incl. db), and ./data"
+	@echo ""
+	@echo "  Self-contained — boots Postgres 16 inside docker by default."
+	@echo "  Use Supabase/etc. by setting DATABASE_URL in the project-root .env."
 	@echo ""
 	@echo "Targets (tests / lint):"
 	@echo "  make test            Run backend + frontend test suites"
@@ -34,6 +38,9 @@ help:
 # ---- compose ----
 dev:
 	docker compose up --build
+
+# Convenience alias so newcomers can just type `make up`.
+up: dev
 
 prod:
 	docker compose -f docker-compose.yml up --build -d

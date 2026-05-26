@@ -6,6 +6,12 @@ A converter takes:
   - ratios: {'train', 'val', 'test'} ratios summing to 1.0
   - classes_override: optional explicit class list (otherwise auto-detect)
   - seed: UUID used to make the split deterministic
+  - treat_unlabeled_as_background: per-call opt-in that tells the
+    converter to materialize empty .txt sidecars for images that arrive
+    without a label file. Ultralytics recommends ~0-10% of frames be
+    label-free "background images" to reduce false positives during
+    training. When false (default), unlabeled images stay orphaned and
+    the recommender surfaces them for triage.
 
 …and returns a ConversionResult with summary stats the caller persists.
 """
@@ -44,4 +50,5 @@ class BaseConverter(ABC):
         ratios: dict[str, float],
         classes_override: list[str] | None,
         seed: uuid.UUID,
+        treat_unlabeled_as_background: bool = False,
     ) -> ConversionResult: ...

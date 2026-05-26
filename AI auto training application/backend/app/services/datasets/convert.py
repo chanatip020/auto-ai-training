@@ -69,6 +69,9 @@ async def run_convert(session: AsyncSession, job: Job) -> None:
     fmt: str = payload["format"]
     ratios: dict[str, float] = payload.get("ratios") or DEFAULT_RATIOS
     classes_override = payload.get("classes_override")
+    # Per-convert override of the dataset's background flag.
+    # `None` => fall back to the dataset row's stored preference.
+    override_bg = payload.get("treat_unlabeled_as_background")
 
     validate_ratios(ratios)
     converter_cls = FORMAT_TO_CONVERTER.get(fmt)
@@ -80,6 +83,10 @@ async def run_convert(session: AsyncSession, job: Job) -> None:
     ds = await session.get(Dataset, dataset_id)
     if ds is None or ds.deleted_at is not None:
         raise AppError("DATASET_NOT_FOUND", "Dataset not found.", 404)
+
+    # Effective background flag = explicit override if provided, else what's
+    # stored on the dataset row.
+    treat_bg = bool(override_bg) if override_bg is not None else bool(ds.treat_unlabeled_as_background)
 
     raw = await _latest_raw_version(session, dataset_id)
 
@@ -116,6 +123,7 @@ async def run_convert(session: AsyncSession, job: Job) -> None:
         ratios=ratios,
         classes_override=classes_override,
         seed=dataset_id,
+        treat_unlabeled_as_background=treat_bg,
     )
 
     job.message = "Recording dataset version"
